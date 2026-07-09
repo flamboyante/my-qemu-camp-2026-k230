@@ -19,6 +19,7 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "system/device_tree.h"
+#include "system/blockdev.h"
 #include "system/system.h"
 #include "system/memory.h"
 #include "target/riscv/cpu.h"
@@ -31,6 +32,7 @@
 #include "hw/intc/sifive_plic.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
+#include "hw/ssi/ssi.h"
 
 /* Align K230_SDK k230_canmv_defconfig */
 #define K230_DIRECT_OPENSBI_ADDR 0x8000000
@@ -110,6 +112,12 @@ static void k230_soc_init(Object *obj)
     object_initialize_child(obj, "c908-cpu", cpu0, TYPE_RISCV_HART_ARRAY);
     object_initialize_child(obj, "k230-wdt0", &s->wdt[0], TYPE_K230_WDT);
     object_initialize_child(obj, "k230-wdt1", &s->wdt[1], TYPE_K230_WDT);
+    object_initialize_child(obj, "k230-qspi0", &s->dw_ssi[0],
+                            TYPE_K230_DW_SSI);
+    object_initialize_child(obj, "k230-qspi1", &s->dw_ssi[1],
+                            TYPE_K230_DW_SSI);
+    object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
+                            TYPE_K230_DW_SSI);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -149,6 +157,23 @@ static void k230_create_uart(MemoryRegion *sys_mem, DeviceState *plic,
     serial_mm_init(sys_mem, memmap[uart_dev].base, 2,
                    qdev_get_gpio_in(plic, K230_UART0_IRQ + index),
                    399193, serial_hd(index), DEVICE_LITTLE_ENDIAN);
+}
+
+static void k230_connect_spi_flash(K230DwSsiState *ssi, const char *flash_type,
+                                   DriveInfo *dinfo)
+{
+    DeviceState *flash = qdev_new(flash_type);
+    qemu_irq flash_cs;
+
+    if (dinfo) {
+        qdev_prop_set_drive_err(flash, "drive", blk_by_legacy_dinfo(dinfo),
+                                &error_fatal);
+    }
+
+    qdev_realize_and_unref(flash, BUS(ssi->spi), &error_fatal);
+
+    flash_cs = qdev_get_gpio_in_named(flash, SSI_GPIO_CS, 0);
+    qdev_connect_gpio_out_named(DEVICE(ssi), "cs", 0, flash_cs);
 }
 
 static void k230_soc_realize(DeviceState *dev, Error **errp)
@@ -198,6 +223,19 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[0]), "max-lines", 4);
+    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[1]), "max-lines", 4);
+    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[2]), "max-lines", 8);
+    qdev_prop_set_bit(DEVICE(&s->dw_ssi[2]), "has-xip", true);
+    qdev_prop_set_uint64(DEVICE(&s->dw_ssi[2]), "flash-window-size",
+                         memmap[K230_DEV_FLASH].size);
+
+    for (int i = 0; i < ARRAY_SIZE(s->dw_ssi); i++) {
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->dw_ssi[i]), errp)) {
+            return;
+        }
+    }
+
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->wdt[0]), 0, memmap[K230_DEV_WDT0].base);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->wdt[0]), 0,
                        qdev_get_gpio_in(DEVICE(s->c908_plic), K230_WDT0_IRQ));
@@ -205,6 +243,17 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->wdt[1]), 0, memmap[K230_DEV_WDT1].base);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->wdt[1]), 0,
                        qdev_get_gpio_in(DEVICE(s->c908_plic), K230_WDT1_IRQ));
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[0]), 0,
+                    memmap[K230_DEV_QSPI0].base);
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[1]), 0,
+                    memmap[K230_DEV_QSPI1].base);
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
+                    memmap[K230_DEV_SPI].base);
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 1,
+                    memmap[K230_DEV_FLASH].base);
+
+    k230_connect_spi_flash(&s->dw_ssi[2], "w25q256", drive_get(IF_MTD, 0, 0));
 
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
@@ -349,23 +398,12 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("sd1", memmap[K230_DEV_SD1].base,
                                 memmap[K230_DEV_SD1].size);
 
-    create_unimplemented_device("qspi0", memmap[K230_DEV_QSPI0].base,
-                                memmap[K230_DEV_QSPI0].size);
-
-    create_unimplemented_device("qspi1", memmap[K230_DEV_QSPI1].base,
-                                memmap[K230_DEV_QSPI1].size);
-
-    create_unimplemented_device("spi", memmap[K230_DEV_SPI].base,
-                                memmap[K230_DEV_SPI].size);
-
     create_unimplemented_device("hi_sys_cfg", memmap[K230_DEV_HI_SYS_CFG].base,
                                 memmap[K230_DEV_HI_SYS_CFG].size);
 
     create_unimplemented_device("ddrc_cfg", memmap[K230_DEV_DDRC_CFG].base,
                                 memmap[K230_DEV_DDRC_CFG].size);
 
-    create_unimplemented_device("flash", memmap[K230_DEV_FLASH].base,
-                                memmap[K230_DEV_FLASH].size);
 }
 
 static void k230_soc_class_init(ObjectClass *oc, const void *data)
