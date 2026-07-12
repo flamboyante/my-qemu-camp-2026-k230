@@ -8,6 +8,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/core/registerfields.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "hw/ssi/k230_dw_ssi.h"
@@ -23,36 +24,62 @@
 #define K230_DW_SSI_VERSION      0x3130332a
 #define K230_DW_SSI_DEFAULT_READ 0x03
 
-#define K230_DW_SSI_SSIENR_ENABLE BIT(0)
-
-#define K230_DW_SSI_SR_BUSY BIT(0)
-#define K230_DW_SSI_SR_TFNF BIT(1)
-#define K230_DW_SSI_SR_TFE  BIT(2)
-#define K230_DW_SSI_SR_RFNE BIT(3)
-#define K230_DW_SSI_SR_RFF  BIT(4)
-
-#define K230_DW_SSI_INT_TXEI BIT(0)
-#define K230_DW_SSI_INT_RXFI BIT(2)
-
-static unsigned k230_dw_ssi_reg_index(hwaddr addr)
-{
-    return addr / sizeof(uint32_t);
-}
-
-static uint32_t k230_dw_ssi_get_reg(K230DwSsiState *s, hwaddr addr)
-{
-    return s->regs[k230_dw_ssi_reg_index(addr)];
-}
-
-static void k230_dw_ssi_set_reg(K230DwSsiState *s, hwaddr addr, uint32_t value)
-{
-    s->regs[k230_dw_ssi_reg_index(addr)] = value;
-}
+REG32(CTRLR0, 0x000)
+REG32(CTRLR1, 0x004)
+REG32(SSIENR, 0x008)
+    FIELD(SSIENR, SSIC_EN, 0, 1)
+REG32(MWCR, 0x00c)
+REG32(SER, 0x010)
+REG32(BAUDR, 0x014)
+REG32(TXFTLR, 0x018)
+    FIELD(TXFTLR, TFT, 0, 5)
+REG32(RXFTLR, 0x01c)
+    FIELD(RXFTLR, RFT, 0, 5)
+REG32(TXFLR, 0x020)
+REG32(RXFLR, 0x024)
+REG32(SR, 0x028)
+    FIELD(SR, BUSY, 0, 1)
+    FIELD(SR, TFNF, 1, 1)
+    FIELD(SR, TFE, 2, 1)
+    FIELD(SR, RFNE, 3, 1)
+    FIELD(SR, RFF, 4, 1)
+REG32(IMR, 0x02c)
+    FIELD(IMR, TXEIM, 0, 1)
+    FIELD(IMR, RXFIM, 4, 1)
+REG32(ISR, 0x030)
+    FIELD(ISR, TXEIS, 0, 1)
+    FIELD(ISR, RXFIS, 4, 1)
+REG32(RISR, 0x034)
+    FIELD(RISR, TXEIR, 0, 1)
+    FIELD(RISR, RXFIR, 4, 1)
+REG32(TXEICR, 0x038)
+REG32(RXOICR, 0x03c)
+REG32(RXUICR, 0x040)
+REG32(MSTICR, 0x044)
+REG32(ICR, 0x048)
+REG32(DMACR, 0x04c)
+REG32(DMATDLR, 0x050)
+REG32(DMARDLR, 0x054)
+REG32(IDR, 0x058)
+REG32(SSIC_VERSION_ID, 0x05c)
+REG32(DR0, 0x060)
+REG32(DR_END, 0x0ec)
+REG32(RX_SAMPLE_DELAY, 0x0f0)
+REG32(SPI_CTRLR0, 0x0f4)
+REG32(DDR_DRIVE_EDGE, 0x0f8)
+REG32(XIP_MODE_BITS, 0x0fc)
+REG32(XIP_INCR_INST, 0x100)
+    FIELD(XIP_INCR_INST, INCR_INST, 0, 16)
+REG32(XIP_WRAP_INST, 0x104)
+REG32(XIP_CTRL, 0x108)
+REG32(XIP_SER, 0x10c)
+REG32(XRXOICR, 0x110)
+REG32(XIP_CNT_TIME_OUT, 0x114)
+REG32(SPI_CTRLR1, 0x118)
 
 static bool k230_dw_ssi_enabled(K230DwSsiState *s)
 {
-    return k230_dw_ssi_get_reg(s, K230_DW_SSI_SSIENR) &
-           K230_DW_SSI_SSIENR_ENABLE;
+    return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
 
 static void k230_dw_ssi_deselect(K230DwSsiState *s)
@@ -86,7 +113,7 @@ static void k230_dw_ssi_select(K230DwSsiState *s, unsigned cs)
 
 static void k230_dw_ssi_update_cs(K230DwSsiState *s)
 {
-    uint32_t ser = k230_dw_ssi_get_reg(s, K230_DW_SSI_SER);
+    uint32_t ser = s->regs[R_SER];
 
     if (!k230_dw_ssi_enabled(s) || !ser) {
         k230_dw_ssi_deselect(s);
@@ -99,26 +126,39 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
 static uint32_t k230_dw_ssi_raw_irq(K230DwSsiState *s)
 {
     uint32_t raw = 0;
+    uint32_t tx_threshold = FIELD_EX32(s->regs[R_TXFTLR], TXFTLR, TFT);
+    uint32_t rx_threshold = FIELD_EX32(s->regs[R_RXFTLR], RXFTLR, RFT);
 
-    if (fifo8_num_used(&s->tx_fifo) <=
-        k230_dw_ssi_get_reg(s, K230_DW_SSI_TXFTLR)) {
-        raw |= K230_DW_SSI_INT_TXEI;
+    if (fifo8_num_used(&s->tx_fifo) <= tx_threshold) {
+        raw = FIELD_DP32(raw, RISR, TXEIR, 1);
     }
 
-    if (fifo8_num_used(&s->rx_fifo) >
-        k230_dw_ssi_get_reg(s, K230_DW_SSI_RXFTLR)) {
-        raw |= K230_DW_SSI_INT_RXFI;
+    if (fifo8_num_used(&s->rx_fifo) > rx_threshold) {
+        raw = FIELD_DP32(raw, RISR, RXFIR, 1);
     }
 
     return raw;
 }
 
+static uint32_t k230_dw_ssi_irq_status(K230DwSsiState *s)
+{
+    uint32_t raw = k230_dw_ssi_raw_irq(s);
+    uint32_t mask = s->regs[R_IMR];
+    uint32_t status = 0;
+
+    status = FIELD_DP32(status, ISR, TXEIS,
+                        FIELD_EX32(raw, RISR, TXEIR) &&
+                        FIELD_EX32(mask, IMR, TXEIM));
+    status = FIELD_DP32(status, ISR, RXFIS,
+                        FIELD_EX32(raw, RISR, RXFIR) &&
+                        FIELD_EX32(mask, IMR, RXFIM));
+
+    return status;
+}
+
 static void k230_dw_ssi_update_irq(K230DwSsiState *s)
 {
-    uint32_t level = k230_dw_ssi_raw_irq(s) &
-                     k230_dw_ssi_get_reg(s, K230_DW_SSI_IMR);
-
-    qemu_set_irq(s->irq, !!level);
+    qemu_set_irq(s->irq, !!k230_dw_ssi_irq_status(s));
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -127,18 +167,11 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
     uint32_t rx_used = fifo8_num_used(&s->rx_fifo);
     uint32_t sr = 0;
 
-    if (tx_used < K230_DW_SSI_FIFO_CAPACITY) {
-        sr |= K230_DW_SSI_SR_TFNF;
-    }
-    if (tx_used == 0) {
-        sr |= K230_DW_SSI_SR_TFE;
-    }
-    if (rx_used != 0) {
-        sr |= K230_DW_SSI_SR_RFNE;
-    }
-    if (rx_used == K230_DW_SSI_FIFO_CAPACITY) {
-        sr |= K230_DW_SSI_SR_RFF;
-    }
+    sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
+    sr = FIELD_DP32(sr, SR, TFE, tx_used == 0);
+    sr = FIELD_DP32(sr, SR, RFNE, rx_used != 0);
+    sr = FIELD_DP32(sr, SR, RFF,
+                    rx_used == K230_DW_SSI_FIFO_CAPACITY);
 
     return sr;
 }
@@ -162,7 +195,7 @@ static void k230_dw_ssi_transfer_byte(K230DwSsiState *s, uint8_t tx)
 
 static bool k230_dw_ssi_is_dr(hwaddr addr)
 {
-    return addr >= K230_DW_SSI_DR0 && addr <= K230_DW_SSI_DR_END &&
+    return addr >= A_DR0 && addr <= A_DR_END &&
            (addr & 0x3) == 0;
 }
 
@@ -180,39 +213,38 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     }
 
     switch (addr) {
-    case K230_DW_SSI_TXFLR:
+    case A_TXFLR:
         value = fifo8_num_used(&s->tx_fifo);
         break;
-    case K230_DW_SSI_RXFLR:
+    case A_RXFLR:
         value = fifo8_num_used(&s->rx_fifo);
         break;
-    case K230_DW_SSI_SR:
+    case A_SR:
         value = k230_dw_ssi_status(s);
         break;
-    case K230_DW_SSI_RISR:
+    case A_RISR:
         value = k230_dw_ssi_raw_irq(s);
         break;
-    case K230_DW_SSI_ISR:
-        value = k230_dw_ssi_raw_irq(s) &
-                k230_dw_ssi_get_reg(s, K230_DW_SSI_IMR);
+    case A_ISR:
+        value = k230_dw_ssi_irq_status(s);
         break;
-    case K230_DW_SSI_TXEICR:
-    case K230_DW_SSI_RXOICR:
-    case K230_DW_SSI_RXUICR:
-    case K230_DW_SSI_MSTICR:
-    case K230_DW_SSI_ICR:
-    case K230_DW_SSI_XRXOICR:
+    case A_TXEICR:
+    case A_RXOICR:
+    case A_RXUICR:
+    case A_MSTICR:
+    case A_ICR:
+    case A_XRXOICR:
         value = 0;
         break;
-    case K230_DW_SSI_SSIC_VERSION_ID:
-        value = K230_DW_SSI_VERSION;
+    case A_SSIC_VERSION_ID:
+        value = s->regs[R_SSIC_VERSION_ID];
         break;
-    case K230_DW_SSI_IDR:
+    case A_IDR:
         value = 0;
         break;
     default:
         if (addr < K230_DW_SSI_REGS_SIZE && (addr & 0x3) == 0) {
-            value = k230_dw_ssi_get_reg(s, addr);
+            value = s->regs[addr / sizeof(uint32_t)];
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: bad read offset 0x%" HWADDR_PRIx "\n",
@@ -235,51 +267,61 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     }
 
     switch (addr) {
-    case K230_DW_SSI_CTRLR0:
-    case K230_DW_SSI_CTRLR1:
-    case K230_DW_SSI_MWCR:
-    case K230_DW_SSI_BAUDR:
-    case K230_DW_SSI_TXFTLR:
-    case K230_DW_SSI_RXFTLR:
-    case K230_DW_SSI_IMR:
-    case K230_DW_SSI_DMACR:
-    case K230_DW_SSI_DMATDLR:
-    case K230_DW_SSI_DMARDLR:
-    case K230_DW_SSI_RX_SAMPLE_DELAY:
-    case K230_DW_SSI_SPI_CTRLR0:
-    case K230_DW_SSI_TXD_DRIVE_EDGE:
-    case K230_DW_SSI_XIP_MODE_BITS:
-    case K230_DW_SSI_XIP_INCR_INST:
-    case K230_DW_SSI_XIP_WRAP_INST:
-    case K230_DW_SSI_XIP_CTRL:
-    case K230_DW_SSI_XIP_SER:
-    case K230_DW_SSI_XIP_CNT_TIME_OUT:
-    case K230_DW_SSI_SPI_CTRLR1:
-        k230_dw_ssi_set_reg(s, addr, value);
+    case A_CTRLR0:
+    case A_CTRLR1:
+    case A_MWCR:
+    case A_BAUDR:
+    case A_IMR:
+    case A_DMACR:
+    case A_DMATDLR:
+    case A_DMARDLR:
+    case A_RX_SAMPLE_DELAY:
+    case A_SPI_CTRLR0:
+    case A_DDR_DRIVE_EDGE:
+    case A_XIP_MODE_BITS:
+    case A_XIP_WRAP_INST:
+    case A_XIP_CTRL:
+    case A_XIP_SER:
+    case A_XIP_CNT_TIME_OUT:
+    case A_SPI_CTRLR1:
+        s->regs[addr / sizeof(uint32_t)] = value;
         k230_dw_ssi_update_irq(s);
         break;
-    case K230_DW_SSI_SER:
-        k230_dw_ssi_set_reg(s, addr, value & MAKE_64BIT_MASK(0, s->num_cs));
+    case A_TXFTLR:
+        s->regs[R_TXFTLR] = FIELD_DP32(0, TXFTLR, TFT, value);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_RXFTLR:
+        s->regs[R_RXFTLR] = FIELD_DP32(0, RXFTLR, RFT, value);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_XIP_INCR_INST:
+        s->regs[R_XIP_INCR_INST] =
+            FIELD_DP32(0, XIP_INCR_INST, INCR_INST, value);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_SER:
+        s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
         k230_dw_ssi_update_cs(s);
         break;
-    case K230_DW_SSI_SSIENR:
-        k230_dw_ssi_set_reg(s, addr, value & K230_DW_SSI_SSIENR_ENABLE);
+    case A_SSIENR:
+        s->regs[R_SSIENR] = FIELD_DP32(0, SSIENR, SSIC_EN, value);
         k230_dw_ssi_update_cs(s);
         k230_dw_ssi_update_irq(s);
         break;
-    case K230_DW_SSI_TXEICR:
-    case K230_DW_SSI_RXOICR:
-    case K230_DW_SSI_RXUICR:
-    case K230_DW_SSI_MSTICR:
-    case K230_DW_SSI_ICR:
-    case K230_DW_SSI_XRXOICR:
-    case K230_DW_SSI_TXFLR:
-    case K230_DW_SSI_RXFLR:
-    case K230_DW_SSI_SR:
-    case K230_DW_SSI_ISR:
-    case K230_DW_SSI_RISR:
-    case K230_DW_SSI_IDR:
-    case K230_DW_SSI_SSIC_VERSION_ID:
+    case A_TXEICR:
+    case A_RXOICR:
+    case A_RXUICR:
+    case A_MSTICR:
+    case A_ICR:
+    case A_XRXOICR:
+    case A_TXFLR:
+    case A_RXFLR:
+    case A_SR:
+    case A_ISR:
+    case A_RISR:
+    case A_IDR:
+    case A_SSIC_VERSION_ID:
         break;
     default:
         if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
@@ -334,7 +376,8 @@ static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr addr,
 {
     K230DwSsiState *s = K230_DW_SSI(opaque);
     uint64_t value = 0;
-    uint8_t opcode = k230_dw_ssi_get_reg(s, K230_DW_SSI_XIP_INCR_INST) & 0xff;
+    uint8_t opcode = FIELD_EX32(s->regs[R_XIP_INCR_INST],
+                                XIP_INCR_INST, INCR_INST);
     int addr_bytes;
     int dummy;
 
@@ -394,11 +437,11 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     fifo8_reset(&s->tx_fifo);
     fifo8_reset(&s->rx_fifo);
 
-    k230_dw_ssi_set_reg(s, K230_DW_SSI_CTRLR0, K230_DW_SSI_CTRLR0_RESET);
-    k230_dw_ssi_set_reg(s, K230_DW_SSI_SSIC_VERSION_ID, K230_DW_SSI_VERSION);
-    k230_dw_ssi_set_reg(s, K230_DW_SSI_BAUDR, 2);
-    k230_dw_ssi_set_reg(s, K230_DW_SSI_XIP_INCR_INST,
-                        K230_DW_SSI_DEFAULT_READ);
+    s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
+    s->regs[R_SSIC_VERSION_ID] = K230_DW_SSI_VERSION;
+    s->regs[R_BAUDR] = 2;
+    s->regs[R_XIP_INCR_INST] =
+        FIELD_DP32(0, XIP_INCR_INST, INCR_INST, K230_DW_SSI_DEFAULT_READ);
 
 }
 
