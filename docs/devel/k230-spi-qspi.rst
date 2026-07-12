@@ -215,34 +215,41 @@ Machine 接入：
 
 .. code-block:: c
 
+   typedef struct K230DwSsiXip {
+       MemoryRegion mmio;
+       bool enabled;
+       hwaddr window_size;
+   } K230DwSsiXip;
+
    struct K230DwSsiState {
        SysBusDevice parent_obj;
 
        MemoryRegion mmio;
-       MemoryRegion xip;
+       K230DwSsiXip xip;
        SSIBus *spi;
        qemu_irq irq;
        qemu_irq *cs_lines;
 
        Fifo8 tx_fifo;
        Fifo8 rx_fifo;
-       uint32_t regs[K230_DW_SSI_MMIO_SIZE / sizeof(uint32_t)];
+       uint32_t regs[K230_DW_SSI_NUM_REGS];
 
        uint32_t num_cs;
        uint32_t max_lines;
-       bool has_xip;
-       hwaddr flash_window_size;
        int active_cs;
    };
 
 职责划分：
 
 * ``mmio`` 是控制器寄存器 window。
-* ``xip`` 是可选 flash/XIP window，只在 SPI/OPI 实例启用。
+* ``xip`` 汇总可选 XIP window 的 MemoryRegion、开关和窗口大小。
 * ``spi`` 是 QEMU ``SSIBus``，连接 ``m25p80``。
 * ``cs_lines`` 是输出 GPIO，低电平选中 flash。
 * ``regs`` 保存普通寄存器读回值。
 * ``tx_fifo``/``rx_fifo`` 支撑 PIO DRx 行为。
+
+控制器对外保持 ``0x1000`` 大小的 MMIO window，``regs`` 只保存
+``0x000..0x118`` 范围内的 71 个寄存器项。
 * ``max_lines`` 区分 QSPI 和 OPI，但第一版不模拟真实多线电气时序。
 
 3. 定义寄存器 offset
@@ -344,9 +351,10 @@ engine，就不保留未激活传输时写入的 TX 数据，避免 ``TXFLR/SR``
 
 .. code-block:: c
 
-   memory_region_init_io(&s->xip, OBJECT(s), &k230_dw_ssi_xip_ops, s,
-                         "k230.dw-ssi.xip", s->flash_window_size);
-   sysbus_init_mmio(sbd, &s->xip);
+   memory_region_init_io(&s->xip.mmio, OBJECT(s),
+                         &k230_dw_ssi_xip_ops, s,
+                         "k230.dw-ssi.xip", s->xip.window_size);
+   sysbus_init_mmio(sbd, &s->xip.mmio);
 
 XIP read 流程：
 
@@ -372,8 +380,8 @@ address 处理，其他 read opcode 默认按 3-byte address 处理。``0x0b``�
 XIP write 第一版只记录 guest error，不修改 flash。flash program/erase 应该先
 通过 ``m25p80`` 的标准命令路径建测试，再决定是否开放。
 
-7. 实现 reset、realize、vmstate、properties
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+7. 实现 reset、instance_init、realize、vmstate、properties
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 reset：
 
@@ -385,16 +393,20 @@ reset：
 * 取消所有 CS。
 * 更新 IRQ。
 
+instance_init：
+
+* ``ssi_create_bus(dev, "spi")``。
+* ``sysbus_init_irq()``。
+* 初始化控制寄存器 ``mmio`` MemoryRegion。
+* 创建 FIFO。
+
 realize：
 
 * 校验 ``num-cs`` 为 ``1..8``。
 * 校验 ``max-lines`` 为 ``1``、``4`` 或 ``8``。
 * 如果 ``has-xip``，要求 ``flash-window-size != 0``。
-* ``ssi_create_bus(dev, "spi")``。
-* ``sysbus_init_irq()``。
 * ``qdev_init_gpio_out_named(dev, s->cs_lines, "cs", s->num_cs)``。
-* 初始化 ``mmio`` 和可选 ``xip`` MemoryRegion。
-* 创建 FIFO。
+* 初始化可选 ``xip`` MemoryRegion。
 
 properties：
 
@@ -402,8 +414,8 @@ properties：
 
    DEFINE_PROP_UINT32("num-cs", K230DwSsiState, num_cs, 1),
    DEFINE_PROP_UINT32("max-lines", K230DwSsiState, max_lines, 1),
-   DEFINE_PROP_BOOL("has-xip", K230DwSsiState, has_xip, false),
-   DEFINE_PROP_SIZE("flash-window-size", K230DwSsiState, flash_window_size, 0),
+   DEFINE_PROP_BOOL("has-xip", K230DwSsiState, xip.enabled, false),
+   DEFINE_PROP_SIZE("flash-window-size", K230DwSsiState, xip.window_size, 0),
 
 8. 接入 K230 machine
 ~~~~~~~~~~~~~~~~~~~~

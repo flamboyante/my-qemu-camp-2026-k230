@@ -16,6 +16,9 @@
 OBJECT_DECLARE_SIMPLE_TYPE(K230DwSsiState, K230_DW_SSI)
 
 #define K230_DW_SSI_MMIO_SIZE 0x1000
+#define K230_DW_SSI_REGS_SIZE 0x11c
+#define K230_DW_SSI_NUM_REGS \
+    (K230_DW_SSI_REGS_SIZE / sizeof(uint32_t))
 
 enum K230DwSsiRegister {
     K230_DW_SSI_CTRLR0          = 0x000,
@@ -57,23 +60,27 @@ enum K230DwSsiRegister {
     K230_DW_SSI_SPI_CTRLR1      = 0x118,
 };
 
+typedef struct K230DwSsiXip {
+    MemoryRegion mmio;
+    bool enabled;
+    hwaddr window_size;
+} K230DwSsiXip;
+
 struct K230DwSsiState {
     SysBusDevice parent_obj;
 
     MemoryRegion mmio;
-    MemoryRegion xip;
+    K230DwSsiXip xip;
     SSIBus *spi;
     qemu_irq irq;
     qemu_irq *cs_lines;
 
     Fifo8 tx_fifo;
     Fifo8 rx_fifo;
-    uint32_t regs[K230_DW_SSI_MMIO_SIZE / sizeof(uint32_t)];
+    uint32_t regs[K230_DW_SSI_NUM_REGS];
 
     uint32_t num_cs;
     uint32_t max_lines;
-    bool has_xip;
-    hwaddr flash_window_size;
     int active_cs;
 };
 

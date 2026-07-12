@@ -211,7 +211,7 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         value = 0;
         break;
     default:
-        if (addr < K230_DW_SSI_MMIO_SIZE && (addr & 0x3) == 0) {
+        if (addr < K230_DW_SSI_REGS_SIZE && (addr & 0x3) == 0) {
             value = k230_dw_ssi_get_reg(s, addr);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -282,7 +282,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case K230_DW_SSI_SSIC_VERSION_ID:
         break;
     default:
-        if (addr >= K230_DW_SSI_MMIO_SIZE || (addr & 0x3) != 0) {
+        if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: bad write offset 0x%" HWADDR_PRIx "\n",
                           DEVICE(s)->canonical_path, addr);
@@ -385,9 +385,10 @@ static const MemoryRegionOps k230_dw_ssi_xip_ops = {
     },
 };
 
-static void k230_dw_ssi_reset(DeviceState *dev)
+
+static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
 {
-    K230DwSsiState *s = K230_DW_SSI(dev);
+    K230DwSsiState *s = K230_DW_SSI(obj);
 
     memset(s->regs, 0, sizeof(s->regs));
     fifo8_reset(&s->tx_fifo);
@@ -399,7 +400,13 @@ static void k230_dw_ssi_reset(DeviceState *dev)
     k230_dw_ssi_set_reg(s, K230_DW_SSI_XIP_INCR_INST,
                         K230_DW_SSI_DEFAULT_READ);
 
+}
+
+static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
+{
+    K230DwSsiState *s = K230_DW_SSI(obj);
     s->active_cs = -1;
+
     if (s->cs_lines) {
         for (int i = 0; i < s->num_cs; i++) {
             qemu_irq_raise(s->cs_lines[i]);
@@ -412,14 +419,31 @@ static void k230_dw_ssi_reset(DeviceState *dev)
 static const VMStateDescription vmstate_k230_dw_ssi = {
     .name = TYPE_K230_DW_SSI,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(regs, K230DwSsiState,
-                             K230_DW_SSI_MMIO_SIZE / sizeof(uint32_t)),
+        VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
         VMSTATE_FIFO8(tx_fifo, K230DwSsiState),
         VMSTATE_FIFO8(rx_fifo, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },
 };
+
+static void k230_dw_ssi_init(Object *obj)
+{
+    K230DwSsiState *s = K230_DW_SSI(obj);
+    DeviceState *dev = DEVICE(obj);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+
+    s->spi = ssi_create_bus(dev, "spi");
+    sysbus_init_irq(sbd, &s->irq);
+
+    memory_region_init_io(&s->mmio, obj, &k230_dw_ssi_ops, s,
+                          TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
+    sysbus_init_mmio(sbd, &s->mmio);
+
+    fifo8_create(&s->tx_fifo, K230_DW_SSI_FIFO_CAPACITY);
+    fifo8_create(&s->rx_fifo, K230_DW_SSI_FIFO_CAPACITY);
+    s->active_cs = -1;
+}
 
 static void k230_dw_ssi_realize(DeviceState *dev, Error **errp)
 {
@@ -438,31 +462,21 @@ static void k230_dw_ssi_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    if (s->has_xip && s->flash_window_size == 0) {
+    if (s->xip.enabled && s->xip.window_size == 0) {
         error_setg(errp, "%s: XIP window size must be non-zero",
                    dev->canonical_path);
         return;
     }
 
-    s->spi = ssi_create_bus(dev, "spi");
-    sysbus_init_irq(sbd, &s->irq);
-
     s->cs_lines = g_new0(qemu_irq, s->num_cs);
     qdev_init_gpio_out_named(dev, s->cs_lines, "cs", s->num_cs);
 
-    memory_region_init_io(&s->mmio, OBJECT(s), &k230_dw_ssi_ops, s,
-                          TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
-    sysbus_init_mmio(sbd, &s->mmio);
-
-    if (s->has_xip) {
-        memory_region_init_io(&s->xip, OBJECT(s), &k230_dw_ssi_xip_ops, s,
-                              "k230.dw-ssi.xip", s->flash_window_size);
-        sysbus_init_mmio(sbd, &s->xip);
+    if (s->xip.enabled) {
+        memory_region_init_io(&s->xip.mmio, OBJECT(s),
+                              &k230_dw_ssi_xip_ops, s,
+                              "k230.dw-ssi.xip", s->xip.window_size);
+        sysbus_init_mmio(sbd, &s->xip.mmio);
     }
-
-    fifo8_create(&s->tx_fifo, K230_DW_SSI_FIFO_CAPACITY);
-    fifo8_create(&s->rx_fifo, K230_DW_SSI_FIFO_CAPACITY);
-    s->active_cs = -1;
 }
 
 static void k230_dw_ssi_finalize(Object *obj)
@@ -477,24 +491,27 @@ static void k230_dw_ssi_finalize(Object *obj)
 static const Property k230_dw_ssi_properties[] = {
     DEFINE_PROP_UINT32("num-cs", K230DwSsiState, num_cs, 1),
     DEFINE_PROP_UINT32("max-lines", K230DwSsiState, max_lines, 1),
-    DEFINE_PROP_BOOL("has-xip", K230DwSsiState, has_xip, false),
-    DEFINE_PROP_SIZE("flash-window-size", K230DwSsiState, flash_window_size, 0),
+    DEFINE_PROP_BOOL("has-xip", K230DwSsiState, xip.enabled, false),
+    DEFINE_PROP_SIZE("flash-window-size", K230DwSsiState, xip.window_size, 0),
 };
 
 static void k230_dw_ssi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     dc->realize = k230_dw_ssi_realize;
     dc->vmsd = &vmstate_k230_dw_ssi;
     device_class_set_props(dc, k230_dw_ssi_properties);
-    device_class_set_legacy_reset(dc, k230_dw_ssi_reset);
+    rc->phases.enter = k230_dw_ssi_enter_reset;
+    rc->phases.hold = k230_dw_ssi_hold_reset;
 }
 
 static const TypeInfo k230_dw_ssi_info = {
     .name = TYPE_K230_DW_SSI,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(K230DwSsiState),
+    .instance_init = k230_dw_ssi_init,
     .instance_finalize = k230_dw_ssi_finalize,
     .class_init = k230_dw_ssi_class_init,
 };
