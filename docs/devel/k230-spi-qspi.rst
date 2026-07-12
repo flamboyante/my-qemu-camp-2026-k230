@@ -250,34 +250,35 @@ Machine 接入：
 
 控制器对外保持 ``0x1000`` 大小的 MMIO window，``regs`` 只保存
 ``0x000..0x118`` 范围内的 71 个寄存器项。
+
 * ``max_lines`` 区分 QSPI 和 OPI，但第一版不模拟真实多线电气时序。
 
-3. 定义寄存器 offset
-~~~~~~~~~~~~~~~~~~~~
+3. 定义寄存器和字段
+~~~~~~~~~~~~~~~~~~~
 
-在 header 里按 TMR/DWC SSI 布局定义 offset。第一版需要这些 offset：
+在实现文件中使用 QEMU ``registerfields.h``，寄存器地址和字段以 K230
+TRM V0.3.1 为准。``REG32`` 同时生成用于 MMIO 的 ``A_*`` 地址和用于
+``regs[]`` 的 ``R_*`` 下标：
 
 .. code-block:: c
 
-   K230_DW_SSI_CTRLR0          = 0x000,
-   K230_DW_SSI_CTRLR1          = 0x004,
-   K230_DW_SSI_SSIENR          = 0x008,
-   K230_DW_SSI_SER             = 0x010,
-   K230_DW_SSI_BAUDR           = 0x014,
-   K230_DW_SSI_TXFTLR          = 0x018,
-   K230_DW_SSI_RXFTLR          = 0x01c,
-   K230_DW_SSI_TXFLR           = 0x020,
-   K230_DW_SSI_RXFLR           = 0x024,
-   K230_DW_SSI_SR              = 0x028,
-   K230_DW_SSI_IMR             = 0x02c,
-   K230_DW_SSI_ISR             = 0x030,
-   K230_DW_SSI_RISR            = 0x034,
-   K230_DW_SSI_DR0             = 0x060,
-   K230_DW_SSI_DR_END          = 0x0ec,
-   K230_DW_SSI_RX_SAMPLE_DELAY = 0x0f0,
-   K230_DW_SSI_SPI_CTRLR0      = 0x0f4,
-   K230_DW_SSI_XIP_INCR_INST   = 0x100,
-   K230_DW_SSI_SPI_CTRLR1      = 0x118,
+   REG32(SSIENR, 0x008)
+       FIELD(SSIENR, SSIC_EN, 0, 1)
+   REG32(SR, 0x028)
+       FIELD(SR, BUSY, 0, 1)
+       FIELD(SR, TFNF, 1, 1)
+       FIELD(SR, TFE, 2, 1)
+       FIELD(SR, RFNE, 3, 1)
+       FIELD(SR, RFF, 4, 1)
+   REG32(RISR, 0x034)
+       FIELD(RISR, TXEIR, 0, 1)
+       FIELD(RISR, RXFIR, 4, 1)
+   REG32(XIP_INCR_INST, 0x100)
+       FIELD(XIP_INCR_INST, INCR_INST, 0, 16)
+
+TRM 中 RX FIFO Full interrupt 位于 bit 4，不是 bit 2。当前实现通过
+``FIELD_EX32`` 读取 enable、FIFO threshold 和 XIP opcode，通过
+``FIELD_DP32`` 构造状态、中断以及只包含有效字段的寄存器写入值。
 
 4. 实现 MMIO read/write
 ~~~~~~~~~~~~~~~~~~~~~~~

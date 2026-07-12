@@ -39,6 +39,7 @@
 #define K230_DW_SSI_SR_TFE          BIT(2)
 #define K230_DW_SSI_SR_RFNE         BIT(3)
 #define K230_DW_SSI_SR_TFNF         BIT(1)
+#define K230_DW_SSI_INT_RXFI        BIT(4)
 
 static void write_dr(QTestState *qts, uint64_t base, uint8_t value)
 {
@@ -88,7 +89,7 @@ static void test_register_readback(void)
     qtest_writel(qts, base + K230_DW_SSI_RXFTLR, 0x4);
     qtest_writel(qts, base + K230_DW_SSI_IMR, 0x1f);
     qtest_writel(qts, base + K230_DW_SSI_SPI_CTRLR0, 0x0300000b);
-    qtest_writel(qts, base + K230_DW_SSI_XIP_INCR_INST, 0x0b);
+    qtest_writel(qts, base + K230_DW_SSI_XIP_INCR_INST, 0xabcd000b);
 
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_CTRLR1), ==, 0x1234);
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_SER), ==, 0x1);
@@ -194,21 +195,24 @@ static void test_internal_interrupt_status(void)
     uint64_t base = K230_SPI_BASE;
 
     qtest_writel(qts, base + K230_DW_SSI_RXFTLR, 0);
-    qtest_writel(qts, base + K230_DW_SSI_IMR, BIT(2));
-    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_RISR) & BIT(2), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_ISR) & BIT(2), ==, 0);
+    qtest_writel(qts, base + K230_DW_SSI_IMR, K230_DW_SSI_INT_RXFI);
+    g_assert((qtest_readl(qts, base + K230_DW_SSI_RISR) &
+              K230_DW_SSI_INT_RXFI) == 0);
+    g_assert((qtest_readl(qts, base + K230_DW_SSI_ISR) &
+              K230_DW_SSI_INT_RXFI) == 0);
 
     qtest_writel(qts, base + K230_DW_SSI_SER, 1);
     qtest_writel(qts, base + K230_DW_SSI_SSIENR, 1);
     write_dr(qts, base, 0x9f);
 
-    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_RISR) & BIT(2), ==,
-                    BIT(2));
-    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_ISR) & BIT(2), ==,
-                    BIT(2));
+    g_assert((qtest_readl(qts, base + K230_DW_SSI_RISR) &
+              K230_DW_SSI_INT_RXFI) == K230_DW_SSI_INT_RXFI);
+    g_assert((qtest_readl(qts, base + K230_DW_SSI_ISR) &
+              K230_DW_SSI_INT_RXFI) == K230_DW_SSI_INT_RXFI);
 
     (void)read_dr(qts, base);
-    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_RISR) & BIT(2), ==, 0);
+    g_assert((qtest_readl(qts, base + K230_DW_SSI_RISR) &
+              K230_DW_SSI_INT_RXFI) == 0);
 
     qtest_quit(qts);
 }
