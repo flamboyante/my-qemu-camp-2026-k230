@@ -18,6 +18,7 @@
 #define K230_DW_SSI_CTRLR0          0x000
 #define K230_DW_SSI_CTRLR1          0x004
 #define K230_DW_SSI_SSIENR          0x008
+#define K230_DW_SSI_MWCR            0x00c
 #define K230_DW_SSI_SER             0x010
 #define K230_DW_SSI_BAUDR           0x014
 #define K230_DW_SSI_TXFTLR          0x018
@@ -28,13 +29,38 @@
 #define K230_DW_SSI_IMR             0x02c
 #define K230_DW_SSI_ISR             0x030
 #define K230_DW_SSI_RISR            0x034
+#define K230_DW_SSI_DMACR           0x04c
+#define K230_DW_SSI_AXIAWLEN        0x050
+#define K230_DW_SSI_AXIARLEN        0x054
+#define K230_DW_SSI_IDR             0x058
 #define K230_DW_SSI_DR0             0x060
+#define K230_DW_SSI_RX_SAMPLE_DELAY 0x0f0
 #define K230_DW_SSI_SPI_CTRLR0      0x0f4
+#define K230_DW_SSI_DDR_DRIVE_EDGE  0x0f8
+#define K230_DW_SSI_XIP_MODE_BITS   0x0fc
 #define K230_DW_SSI_XIP_INCR_INST   0x100
+#define K230_DW_SSI_XIP_WRAP_INST   0x104
+#define K230_DW_SSI_XIP_CTRL        0x108
+#define K230_DW_SSI_SPI_CTRLR1      0x118
+#define K230_DW_SSI_SPIDR           0x120
 #define K230_DW_SSI_SSIC_VERSION_ID 0x05c
 
 #define K230_DW_SSI_CTRLR0_RESET    0x00004007
+#define K230_DW_SSI_SPI_CTRLR0_RESET 0x04000200
+#define K230_DW_SSI_IDR_RESET       0xa1b2c3d5
 #define K230_DW_SSI_VERSION         0x3130332a
+
+#define K230_DW_SSI_CTRLR0_WRITABLE_MASK     0x00cf7f1f
+#define K230_DW_SSI_CTRLR1_WRITABLE_MASK     0x0000ffff
+#define K230_DW_SSI_MWCR_WRITABLE_MASK       0x00000003
+#define K230_DW_SSI_BAUDR_WRITABLE_MASK      0x0000fffe
+#define K230_DW_SSI_TXFTLR_WRITABLE_MASK     0x00ff00ff
+#define K230_DW_SSI_RXFTLR_WRITABLE_MASK     0x000000ff
+#define K230_DW_SSI_IMR_WRITABLE_MASK        0x000000bf
+#define K230_DW_SSI_RX_SAMPLE_WRITABLE_MASK  0x000100ff
+#define K230_DW_SSI_SPI_CTRLR0_WRITABLE_MASK 0x4007fbbf
+#define K230_DW_SSI_DDR_EDGE_WRITABLE_MASK   0x000000ff
+#define K230_DW_SSI_XIP_REG_WRITABLE_MASK    0x0000ffff
 
 #define K230_DW_SSI_SR_TFE          BIT(2)
 #define K230_DW_SSI_SR_RFNE         BIT(3)
@@ -81,6 +107,7 @@ static void test_register_readback(void)
 {
     QTestState *qts = qtest_init("-machine k230");
     uint64_t base = K230_QSPI0_BASE;
+    uint64_t xip_base = K230_SPI_BASE;
 
     qtest_writel(qts, base + K230_DW_SSI_CTRLR1, 0x1234);
     qtest_writel(qts, base + K230_DW_SSI_SER, 0x1);
@@ -89,7 +116,7 @@ static void test_register_readback(void)
     qtest_writel(qts, base + K230_DW_SSI_RXFTLR, 0x4);
     qtest_writel(qts, base + K230_DW_SSI_IMR, 0x1f);
     qtest_writel(qts, base + K230_DW_SSI_SPI_CTRLR0, 0x0300000b);
-    qtest_writel(qts, base + K230_DW_SSI_XIP_INCR_INST, 0xabcd000b);
+    qtest_writel(qts, xip_base + K230_DW_SSI_XIP_INCR_INST, 0xabcd000b);
 
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_CTRLR1), ==, 0x1234);
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_SER), ==, 0x1);
@@ -98,9 +125,110 @@ static void test_register_readback(void)
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_RXFTLR), ==, 0x4);
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_IMR), ==, 0x1f);
     g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_SPI_CTRLR0), ==,
-                    0x0300000b);
-    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_XIP_INCR_INST), ==,
+                    0x0400000b);
+    g_assert_cmphex(qtest_readl(qts,
+                                xip_base + K230_DW_SSI_XIP_INCR_INST), ==,
                     0x0b);
+
+    qtest_quit(qts);
+}
+
+static void test_register_write_masks(void)
+{
+    QTestState *qts = qtest_init("-machine k230");
+    uint64_t base = K230_QSPI0_BASE;
+    uint64_t xip_base = K230_SPI_BASE;
+
+    qtest_writel(qts, base + K230_DW_SSI_CTRLR0, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_CTRLR1, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_MWCR, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_BAUDR, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_TXFTLR, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_RXFTLR, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_IMR, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_RX_SAMPLE_DELAY, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_SPI_CTRLR0, UINT32_MAX);
+    qtest_writel(qts, base + K230_DW_SSI_DDR_DRIVE_EDGE, UINT32_MAX);
+    qtest_writel(qts, xip_base + K230_DW_SSI_XIP_MODE_BITS, UINT32_MAX);
+    qtest_writel(qts, xip_base + K230_DW_SSI_XIP_INCR_INST, UINT32_MAX);
+    qtest_writel(qts, xip_base + K230_DW_SSI_XIP_WRAP_INST, UINT32_MAX);
+
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_CTRLR0), ==,
+                    K230_DW_SSI_CTRLR0_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_CTRLR1), ==,
+                    K230_DW_SSI_CTRLR1_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_MWCR), ==,
+                    K230_DW_SSI_MWCR_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_BAUDR), ==,
+                    K230_DW_SSI_BAUDR_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_TXFTLR), ==,
+                    K230_DW_SSI_TXFTLR_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_RXFTLR), ==,
+                    K230_DW_SSI_RXFTLR_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_IMR), ==,
+                    K230_DW_SSI_IMR_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_RX_SAMPLE_DELAY), ==,
+                    K230_DW_SSI_RX_SAMPLE_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_SPI_CTRLR0), ==,
+                    K230_DW_SSI_SPI_CTRLR0_RESET |
+                    K230_DW_SSI_SPI_CTRLR0_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_DDR_DRIVE_EDGE), ==,
+                    K230_DW_SSI_DDR_EDGE_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts,
+                                xip_base + K230_DW_SSI_XIP_MODE_BITS), ==,
+                    K230_DW_SSI_XIP_REG_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts,
+                                xip_base + K230_DW_SSI_XIP_INCR_INST), ==,
+                    K230_DW_SSI_XIP_REG_WRITABLE_MASK);
+    g_assert_cmphex(qtest_readl(qts,
+                                xip_base + K230_DW_SSI_XIP_WRAP_INST), ==,
+                    K230_DW_SSI_XIP_REG_WRITABLE_MASK);
+
+    qtest_quit(qts);
+}
+
+static void test_read_only_and_reserved_registers(void)
+{
+    static const uint32_t read_only_offsets[] = {
+        K230_DW_SSI_TXFLR,
+        K230_DW_SSI_RXFLR,
+        K230_DW_SSI_SR,
+        K230_DW_SSI_ISR,
+        K230_DW_SSI_RISR,
+        K230_DW_SSI_IDR,
+        K230_DW_SSI_SSIC_VERSION_ID,
+    };
+    static const uint32_t reserved_offsets[] = {
+        K230_DW_SSI_DMACR,
+        K230_DW_SSI_AXIAWLEN,
+        K230_DW_SSI_AXIARLEN,
+        K230_DW_SSI_XIP_CTRL,
+        K230_DW_SSI_SPI_CTRLR1,
+        K230_DW_SSI_SPIDR,
+    };
+    QTestState *qts = qtest_init("-machine k230");
+    uint64_t base = K230_QSPI0_BASE;
+
+    for (int i = 0; i < ARRAY_SIZE(read_only_offsets); i++) {
+        uint64_t addr = base + read_only_offsets[i];
+        uint32_t before = qtest_readl(qts, addr);
+
+        qtest_writel(qts, addr, UINT32_MAX);
+        g_assert_cmphex(qtest_readl(qts, addr), ==, before);
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(reserved_offsets); i++) {
+        uint64_t addr = base + reserved_offsets[i];
+
+        qtest_writel(qts, addr, UINT32_MAX);
+        g_assert_cmphex(qtest_readl(qts, addr), ==, 0);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, base + K230_DW_SSI_IDR), ==,
+                    K230_DW_SSI_IDR_RESET);
+    g_assert_cmphex(qtest_readl(qts,
+                                base + K230_DW_SSI_SSIC_VERSION_ID), ==,
+                    K230_DW_SSI_VERSION);
 
     qtest_quit(qts);
 }
@@ -247,6 +375,10 @@ int main(int argc, char **argv)
 
     qtest_add_func("/k230-dw-ssi/reset_values", test_reset_values);
     qtest_add_func("/k230-dw-ssi/register_readback", test_register_readback);
+    qtest_add_func("/k230-dw-ssi/register_write_masks",
+                   test_register_write_masks);
+    qtest_add_func("/k230-dw-ssi/read_only_and_reserved_registers",
+                   test_read_only_and_reserved_registers);
     qtest_add_func("/k230-dw-ssi/jedec_id", test_jedec_id);
     qtest_add_func("/k230-dw-ssi/disabled_dr_write_does_not_stale_fifo",
                    test_disabled_dr_write_does_not_stale_fifo);
