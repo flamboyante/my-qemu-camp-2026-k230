@@ -20,36 +20,85 @@
 
 #define K230_DW_SSI_FIFO_CAPACITY 32
 
-#define K230_DW_SSI_CTRLR0_RESET 0x00004007
-#define K230_DW_SSI_VERSION      0x3130332a
-#define K230_DW_SSI_DEFAULT_READ 0x03
+#define K230_DW_SSI_CTRLR0_RESET            0x00004007
+#define K230_DW_SSI_SR_RESET                0x00000006
+#define K230_DW_SSI_IMR_RESET               0x0000003f
+#define K230_DW_SSI_IDR_RESET               0xa1b2c3d5
+#define K230_DW_SSI_SPI_CTRLR0_SPI_RESET    0x04000200
+#define K230_DW_SSI_SPI_CTRLR0_XIP_RESET    0x28000200
+#define K230_DW_SSI_VERSION                 0x3130332a
+#define K230_DW_SSI_DEFAULT_READ            0x03
 
 REG32(CTRLR0, 0x000)
+    FIELD(CTRLR0, DFS, 0, 5)
+    FIELD(CTRLR0, SCPH, 8, 1)
+    FIELD(CTRLR0, SCPOL, 9, 1)
+    FIELD(CTRLR0, TMOD, 10, 2)
+    FIELD(CTRLR0, SLV_OE, 12, 1)
+    FIELD(CTRLR0, SRL, 13, 1)
+    FIELD(CTRLR0, SSTE, 14, 1)
+    FIELD(CTRLR0, CFS, 16, 4)
+    FIELD(CTRLR0, SPI_FRF, 22, 2)
 REG32(CTRLR1, 0x004)
+    FIELD(CTRLR1, NDF, 0, 16)
 REG32(SSIENR, 0x008)
     FIELD(SSIENR, SSIC_EN, 0, 1)
 REG32(MWCR, 0x00c)
+    FIELD(MWCR, MWMOD, 0, 1)
+    FIELD(MWCR, MDD, 1, 1)
 REG32(SER, 0x010)
 REG32(BAUDR, 0x014)
+    FIELD(BAUDR, SCKDV, 1, 15)
 REG32(TXFTLR, 0x018)
-    FIELD(TXFTLR, TFT, 0, 5)
+    FIELD(TXFTLR, TFT, 0, 8)
+    FIELD(TXFTLR, TXFTHR, 16, 8)
 REG32(RXFTLR, 0x01c)
-    FIELD(RXFTLR, RFT, 0, 5)
+    FIELD(RXFTLR, RFT, 0, 8)
 REG32(TXFLR, 0x020)
 REG32(RXFLR, 0x024)
 REG32(SR, 0x028)
+    FIELD(SR, CMPLTD_DF, 15, 17)
+    FIELD(SR, DCOL, 6, 1)
+    FIELD(SR, TXE, 5, 1)
     FIELD(SR, BUSY, 0, 1)
     FIELD(SR, TFNF, 1, 1)
     FIELD(SR, TFE, 2, 1)
     FIELD(SR, RFNE, 3, 1)
     FIELD(SR, RFF, 4, 1)
 REG32(IMR, 0x02c)
+    FIELD(IMR, DONEM, 11, 1)
+    FIELD(IMR, SPITEM, 10, 1)
+    FIELD(IMR, AXIEM, 8, 1)
+    FIELD(IMR, TXUIM, 7, 1)
+    FIELD(IMR, XRXOIM, 6, 1)
+    FIELD(IMR, MSTIM, 5, 1)
+    FIELD(IMR, RXOIM, 3, 1)
+    FIELD(IMR, RXUIM, 2, 1)
+    FIELD(IMR, TXOIM, 1, 1)
     FIELD(IMR, TXEIM, 0, 1)
     FIELD(IMR, RXFIM, 4, 1)
 REG32(ISR, 0x030)
+    FIELD(ISR, DONES, 11, 1)
+    FIELD(ISR, SPITES, 10, 1)
+    FIELD(ISR, AXIES, 8, 1)
+    FIELD(ISR, TXUIS, 7, 1)
+    FIELD(ISR, XRXOIS, 6, 1)
+    FIELD(ISR, MSTIS, 5, 1)
+    FIELD(ISR, RXOIS, 3, 1)
+    FIELD(ISR, RXUIS, 2, 1)
+    FIELD(ISR, TXOIS, 1, 1)
     FIELD(ISR, TXEIS, 0, 1)
     FIELD(ISR, RXFIS, 4, 1)
 REG32(RISR, 0x034)
+    FIELD(RISR, DONER, 11, 1)
+    FIELD(RISR, SPITER, 10, 1)
+    FIELD(RISR, AXIER, 8, 1)
+    FIELD(RISR, TXUIR, 7, 1)
+    FIELD(RISR, XRXOIR, 6, 1)
+    FIELD(RISR, MSTIR, 5, 1)
+    FIELD(RISR, RXOIR, 3, 1)
+    FIELD(RISR, RXUIR, 2, 1)
+    FIELD(RISR, TXOIR, 1, 1)
     FIELD(RISR, TXEIR, 0, 1)
     FIELD(RISR, RXFIR, 4, 1)
 REG32(TXEICR, 0x038)
@@ -58,24 +107,86 @@ REG32(RXUICR, 0x040)
 REG32(MSTICR, 0x044)
 REG32(ICR, 0x048)
 REG32(DMACR, 0x04c)
-REG32(DMATDLR, 0x050)
-REG32(DMARDLR, 0x054)
+REG32(AXIAWLEN, 0x050)
+    FIELD(AXIAWLEN, AWLEN, 8, 8)
+REG32(AXIARLEN, 0x054)
+    FIELD(AXIARLEN, ARLEN, 8, 8)
 REG32(IDR, 0x058)
+    FIELD(IDR, IDCODE, 0, 32)
 REG32(SSIC_VERSION_ID, 0x05c)
 REG32(DR0, 0x060)
 REG32(DR_END, 0x0ec)
 REG32(RX_SAMPLE_DELAY, 0x0f0)
+    FIELD(RX_SAMPLE_DELAY, RSD, 0, 8)
+    FIELD(RX_SAMPLE_DELAY, SE, 16, 1)
 REG32(SPI_CTRLR0, 0x0f4)
+    FIELD(SPI_CTRLR0, CLK_STRETCH_EN, 30, 1)
+    FIELD(SPI_CTRLR0, XIP_PREFETCH_EN, 29, 1)
+    FIELD(SPI_CTRLR0, XIP_MBL, 26, 2)
+    FIELD(SPI_CTRLR0, SPI_RXDS_SIG_EN, 25, 1)
+    FIELD(SPI_CTRLR0, SPI_DM_EN, 24, 1)
+    FIELD(SPI_CTRLR0, SSIC_XIP_CONT_XFER_EN, 21, 1)
+    FIELD(SPI_CTRLR0, XIP_INST_EN, 20, 1)
+    FIELD(SPI_CTRLR0, XIP_DFS_HC, 19, 1)
+    FIELD(SPI_CTRLR0, SPI_RXDS_EN, 18, 1)
+    FIELD(SPI_CTRLR0, INST_DDR_EN, 17, 1)
+    FIELD(SPI_CTRLR0, SPI_DDR_EN, 16, 1)
+    FIELD(SPI_CTRLR0, WAIT_CYCLES, 11, 5)
+    FIELD(SPI_CTRLR0, INST_L, 8, 2)
+    FIELD(SPI_CTRLR0, XIP_MD_BIT_EN, 7, 1)
+    FIELD(SPI_CTRLR0, ADDR_L, 2, 4)
+    FIELD(SPI_CTRLR0, TRANS_TYPE, 0, 2)
 REG32(DDR_DRIVE_EDGE, 0x0f8)
+    FIELD(DDR_DRIVE_EDGE, TDE, 0, 8)
 REG32(XIP_MODE_BITS, 0x0fc)
+    FIELD(XIP_MODE_BITS, XIP_MD_BITS, 0, 16)
 REG32(XIP_INCR_INST, 0x100)
     FIELD(XIP_INCR_INST, INCR_INST, 0, 16)
 REG32(XIP_WRAP_INST, 0x104)
-REG32(XIP_CTRL, 0x108)
-REG32(XIP_SER, 0x10c)
-REG32(XRXOICR, 0x110)
-REG32(XIP_CNT_TIME_OUT, 0x114)
-REG32(SPI_CTRLR1, 0x118)
+    FIELD(XIP_WRAP_INST, WRAP_INST, 0, 16)
+
+#define K230_DW_SSI_CTRLR0_WRITABLE_MASK \
+    (R_CTRLR0_DFS_MASK | \
+     R_CTRLR0_SCPH_MASK | \
+     R_CTRLR0_SCPOL_MASK | \
+     R_CTRLR0_TMOD_MASK | \
+     R_CTRLR0_SLV_OE_MASK | \
+     R_CTRLR0_SRL_MASK | \
+     R_CTRLR0_SSTE_MASK | \
+     R_CTRLR0_CFS_MASK | \
+     R_CTRLR0_SPI_FRF_MASK)
+
+#define K230_DW_SSI_CTRLR1_WRITABLE_MASK R_CTRLR1_NDF_MASK
+#define K230_DW_SSI_MWCR_WRITABLE_MASK \
+    (R_MWCR_MWMOD_MASK | R_MWCR_MDD_MASK)
+#define K230_DW_SSI_BAUDR_WRITABLE_MASK R_BAUDR_SCKDV_MASK
+#define K230_DW_SSI_TXFTLR_WRITABLE_MASK \
+    (R_TXFTLR_TFT_MASK | R_TXFTLR_TXFTHR_MASK)
+#define K230_DW_SSI_RXFTLR_WRITABLE_MASK R_RXFTLR_RFT_MASK
+#define K230_DW_SSI_IMR_WRITABLE_MASK \
+    (R_IMR_TXEIM_MASK | R_IMR_TXOIM_MASK | R_IMR_RXUIM_MASK | \
+     R_IMR_RXOIM_MASK | R_IMR_RXFIM_MASK | R_IMR_MSTIM_MASK | \
+     R_IMR_TXUIM_MASK)
+#define K230_DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK \
+    (R_RX_SAMPLE_DELAY_RSD_MASK | R_RX_SAMPLE_DELAY_SE_MASK)
+#define K230_DW_SSI_SPI_CTRLR0_WRITABLE_MASK \
+    (R_SPI_CTRLR0_CLK_STRETCH_EN_MASK | \
+     R_SPI_CTRLR0_INST_DDR_EN_MASK | \
+     R_SPI_CTRLR0_SPI_DDR_EN_MASK | \
+     R_SPI_CTRLR0_SPI_RXDS_EN_MASK | \
+     R_SPI_CTRLR0_WAIT_CYCLES_MASK | \
+     R_SPI_CTRLR0_INST_L_MASK | \
+     R_SPI_CTRLR0_XIP_MD_BIT_EN_MASK | \
+     R_SPI_CTRLR0_ADDR_L_MASK | \
+     R_SPI_CTRLR0_TRANS_TYPE_MASK)
+#define K230_DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK \
+    R_DDR_DRIVE_EDGE_TDE_MASK
+
+static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
+                                     uint32_t value, uint32_t mask)
+{
+    s->regs[reg] = (s->regs[reg] & ~mask) | (value & mask);
+}
 
 static bool k230_dw_ssi_enabled(K230DwSsiState *s)
 {
@@ -213,6 +324,20 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     }
 
     switch (addr) {
+    case A_CTRLR0:
+    case A_CTRLR1:
+    case A_SSIENR:
+    case A_MWCR:
+    case A_SER:
+    case A_BAUDR:
+    case A_TXFTLR:
+    case A_RXFTLR:
+    case A_IMR:
+    case A_RX_SAMPLE_DELAY:
+    case A_SPI_CTRLR0:
+    case A_DDR_DRIVE_EDGE:
+        value = s->regs[addr / sizeof(uint32_t)];
+        break;
     case A_TXFLR:
         value = fifo8_num_used(&s->tx_fifo);
         break;
@@ -233,19 +358,23 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     case A_RXUICR:
     case A_MSTICR:
     case A_ICR:
-    case A_XRXOICR:
         value = 0;
+        break;
+    case A_XIP_MODE_BITS:
+    case A_XIP_INCR_INST:
+    case A_XIP_WRAP_INST:
+        if (s->xip.enabled) {
+            value = s->regs[addr / sizeof(uint32_t)];
+        }
         break;
     case A_SSIC_VERSION_ID:
         value = s->regs[R_SSIC_VERSION_ID];
         break;
     case A_IDR:
-        value = 0;
+        value = s->regs[R_IDR];
         break;
     default:
-        if (addr < K230_DW_SSI_REGS_SIZE && (addr & 0x3) == 0) {
-            value = s->regs[addr / sizeof(uint32_t)];
-        } else {
+        if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: bad read offset 0x%" HWADDR_PRIx "\n",
                           DEVICE(s)->canonical_path, addr);
@@ -268,36 +397,74 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
 
     switch (addr) {
     case A_CTRLR0:
-    case A_CTRLR1:
-    case A_MWCR:
-    case A_BAUDR:
-    case A_IMR:
-    case A_DMACR:
-    case A_DMATDLR:
-    case A_DMARDLR:
-    case A_RX_SAMPLE_DELAY:
-    case A_SPI_CTRLR0:
-    case A_DDR_DRIVE_EDGE:
-    case A_XIP_MODE_BITS:
-    case A_XIP_WRAP_INST:
-    case A_XIP_CTRL:
-    case A_XIP_SER:
-    case A_XIP_CNT_TIME_OUT:
-    case A_SPI_CTRLR1:
-        s->regs[addr / sizeof(uint32_t)] = value;
+        k230_dw_ssi_write_masked(s, R_CTRLR0, value,
+                                 K230_DW_SSI_CTRLR0_WRITABLE_MASK);
         k230_dw_ssi_update_irq(s);
         break;
+    case A_CTRLR1:
+        k230_dw_ssi_write_masked(s, R_CTRLR1, value,
+                                 K230_DW_SSI_CTRLR1_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_MWCR:
+        k230_dw_ssi_write_masked(s, R_MWCR, value,
+                                 K230_DW_SSI_MWCR_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_BAUDR:
+        k230_dw_ssi_write_masked(s, R_BAUDR, value,
+                                 K230_DW_SSI_BAUDR_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_IMR:
+        k230_dw_ssi_write_masked(s, R_IMR, value,
+                                 K230_DW_SSI_IMR_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_RX_SAMPLE_DELAY:
+        k230_dw_ssi_write_masked(
+            s, R_RX_SAMPLE_DELAY, value,
+            K230_DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_DDR_DRIVE_EDGE:
+        k230_dw_ssi_write_masked(
+            s, R_DDR_DRIVE_EDGE, value,
+            K230_DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_SPI_CTRLR0:
+        k230_dw_ssi_write_masked(
+            s, R_SPI_CTRLR0, value,
+            K230_DW_SSI_SPI_CTRLR0_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
+        break;
+    case A_XIP_MODE_BITS:
+        if (s->xip.enabled) {
+            s->regs[R_XIP_MODE_BITS] =
+                FIELD_DP32(0, XIP_MODE_BITS, XIP_MD_BITS, value);
+        }
+        break;
+    case A_XIP_INCR_INST:
+        if (s->xip.enabled) {
+            s->regs[R_XIP_INCR_INST] =
+                FIELD_DP32(0, XIP_INCR_INST, INCR_INST, value);
+        }
+        break;
+    case A_XIP_WRAP_INST:
+        if (s->xip.enabled) {
+            s->regs[R_XIP_WRAP_INST] =
+                FIELD_DP32(0, XIP_WRAP_INST, WRAP_INST, value);
+        }
+        break;
     case A_TXFTLR:
-        s->regs[R_TXFTLR] = FIELD_DP32(0, TXFTLR, TFT, value);
+        k230_dw_ssi_write_masked(s, R_TXFTLR, value,
+                                 K230_DW_SSI_TXFTLR_WRITABLE_MASK);
         k230_dw_ssi_update_irq(s);
         break;
     case A_RXFTLR:
-        s->regs[R_RXFTLR] = FIELD_DP32(0, RXFTLR, RFT, value);
-        k230_dw_ssi_update_irq(s);
-        break;
-    case A_XIP_INCR_INST:
-        s->regs[R_XIP_INCR_INST] =
-            FIELD_DP32(0, XIP_INCR_INST, INCR_INST, value);
+        k230_dw_ssi_write_masked(s, R_RXFTLR, value,
+                                 K230_DW_SSI_RXFTLR_WRITABLE_MASK);
         k230_dw_ssi_update_irq(s);
         break;
     case A_SER:
@@ -314,12 +481,14 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case A_RXUICR:
     case A_MSTICR:
     case A_ICR:
-    case A_XRXOICR:
     case A_TXFLR:
     case A_RXFLR:
     case A_SR:
     case A_ISR:
     case A_RISR:
+    case A_DMACR:
+    case A_AXIAWLEN:
+    case A_AXIARLEN:
     case A_IDR:
     case A_SSIC_VERSION_ID:
         break;
@@ -338,6 +507,11 @@ static const MemoryRegionOps k230_dw_ssi_ops = {
     .write = k230_dw_ssi_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
+    .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
         .unaligned = false,
@@ -438,11 +612,13 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     fifo8_reset(&s->rx_fifo);
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
+    s->regs[R_SR] = K230_DW_SSI_SR_RESET;
+    s->regs[R_IMR] = K230_DW_SSI_IMR_RESET;
+    s->regs[R_IDR] = K230_DW_SSI_IDR_RESET;
     s->regs[R_SSIC_VERSION_ID] = K230_DW_SSI_VERSION;
-    s->regs[R_BAUDR] = 2;
-    s->regs[R_XIP_INCR_INST] =
-        FIELD_DP32(0, XIP_INCR_INST, INCR_INST, K230_DW_SSI_DEFAULT_READ);
-
+    s->regs[R_SPI_CTRLR0] = s->xip.enabled ?
+        K230_DW_SSI_SPI_CTRLR0_XIP_RESET :
+        K230_DW_SSI_SPI_CTRLR0_SPI_RESET;
 }
 
 static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
