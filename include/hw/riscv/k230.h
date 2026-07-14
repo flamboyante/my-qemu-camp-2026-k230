@@ -23,6 +23,7 @@
 #include "hw/watchdog/k230_wdt.h"
 #include "hw/misc/k230_rmu.h"
 #include "hw/timer/k230_dwapb_timer.h"
+#include "hw/misc/k230_iomux.h"
 
 #define C908_CPU_HARTID   (0)
 
@@ -46,6 +47,7 @@ typedef struct K230SoCState {
     DwSsiState dw_ssi[3];
     K230RmuState rmu;
     K230TimerState timer;
+    K230IomuxState iomux;
     MemoryRegion sram;
     MemoryRegion bootrom;
 

@@ -188,6 +188,7 @@ static void k230_soc_init(Object *obj)
     Clock *timer_clk = clock_new(OBJECT(s), "timer-clk");
     clock_set_hz(timer_clk, K230_APBTMR_DEFAULT_FREQ);
     qdev_connect_clock_in(DEVICE(&s->timer), "pclk", timer_clk);
+    object_initialize_child(obj, "k230-iomux", &s->iomux, TYPE_K230_IOMUX);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -336,6 +337,11 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
     k230_connect_ssi_irqs(s);
 
+    /* IOMUX */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->iomux), errp)) {
+        return;
+    }
+
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->wdt[0]), 0, memmap[K230_DEV_WDT0].base);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->wdt[0]), 0,
                        qdev_get_gpio_in(DEVICE(s->c908_plic), K230_WDT0_IRQ));
@@ -367,6 +373,7 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         return;
     }
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->rmu), 0, memmap[K230_DEV_RMU].base);
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->iomux), 0, memmap[K230_DEV_IOMUX].base);
 
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
@@ -441,6 +448,8 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
     create_unimplemented_device("iomux", memmap[K230_DEV_IOMUX].base,
                                 memmap[K230_DEV_IOMUX].size);
+    create_unimplemented_device("timer", memmap[K230_DEV_TIMER].base,
+                                memmap[K230_DEV_TIMER].size);
 
     create_unimplemented_device("wdt0", memmap[K230_DEV_WDT0].base,
                                 memmap[K230_DEV_WDT0].size);
