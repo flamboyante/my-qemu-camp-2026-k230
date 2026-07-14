@@ -260,6 +260,14 @@ static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
     s->regs[reg] = (s->regs[reg] & ~mask) | (value & mask);
 }
 
+static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
+{
+    unsigned int bits = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, DFS) + 1;
+
+    return bits == 32 ? UINT32_MAX : MAKE_64BIT_MASK(0, bits);
+}
+
+
 static bool k230_dw_ssi_enabled(K230DwSsiState *s)
 {
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
@@ -321,11 +329,11 @@ static uint32_t k230_dw_ssi_raw_irq(K230DwSsiState *s)
     uint32_t tx_threshold = FIELD_EX32(s->regs[R_TXFTLR], TXFTLR, TFT);
     uint32_t rx_threshold = FIELD_EX32(s->regs[R_RXFTLR], RXFTLR, RFT);
 
-    if (fifo8_num_used(&s->tx_fifo) <= tx_threshold) {
+    if (fifo32_num_used(&s->tx_fifo) <= tx_threshold) {
         raw = FIELD_DP32(raw, RISR, TXEIR, 1);
     }
 
-    if (fifo8_num_used(&s->rx_fifo) > rx_threshold) {
+    if (fifo32_num_used(&s->rx_fifo) > rx_threshold) {
         raw = FIELD_DP32(raw, RISR, RXFIR, 1);
     }
 
@@ -360,15 +368,15 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
      * 通过拉高 CS 结束外设命令，并丢弃尚未消费的 FIFO 数据。
      */
     k230_dw_ssi_deselect(s);
-    fifo8_reset(&s->tx_fifo);
-    fifo8_reset(&s->rx_fifo);
+    fifo32_reset(&s->tx_fifo);
+    fifo32_reset(&s->rx_fifo);
     k230_dw_ssi_update_irq(s);
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
 {
-    uint32_t tx_used = fifo8_num_used(&s->tx_fifo);
-    uint32_t rx_used = fifo8_num_used(&s->rx_fifo);
+    uint32_t tx_used = fifo32_num_used(&s->tx_fifo);
+    uint32_t rx_used = fifo32_num_used(&s->rx_fifo);
     uint32_t sr = 0;
 
     sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
@@ -380,22 +388,35 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
     return sr;
 }
 
-static void k230_dw_ssi_transfer_byte(K230DwSsiState *s, uint8_t tx)
+static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 {
-    uint8_t rx;
-
     if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
-        k230_dw_ssi_update_irq(s);
         return;
     }
 
-    rx = ssi_transfer(s->spi, tx);
-    if (!fifo8_is_full(&s->rx_fifo)) {
-        fifo8_push(&s->rx_fifo, rx);
+    if (fifo32_is_full(&s->tx_fifo)) {
+        return
     }
 
-    k230_dw_ssi_update_irq(s);
+    fifo32_push(&s->tx_fifo, tx & k230_dw_ssi_frame_masked(s));
+    k230_dw_ssi_run_transfer(s);
 }
+
+
+static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
+{
+    /* 当前 profile 不支持广播片选，不能静默选择最低有效位。 */
+    if (ser & (ser - 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: multiple chip selects enabled: 0x%x\n",
+                      DEVICE(s)->canonical_path, ser);
+        k230_dw_ssi_deselect(s);
+        return;
+    }
+    if(s->)
+}
+
+
 
 static bool k230_dw_ssi_is_dr(hwaddr addr)
 {
@@ -459,8 +480,8 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     uint32_t value = 0;
 
     if (k230_dw_ssi_is_dr(addr)) {
-        if (!fifo8_is_empty(&s->rx_fifo)) {
-            value = fifo8_pop(&s->rx_fifo);
+        if (!fifo32_is_empty(&s->rx_fifo)) {
+            value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
         }
         k230_dw_ssi_update_irq(s);
         return value;
@@ -501,10 +522,10 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         value = s->regs[R_SER] & MAKE_64BIT_MASK(0, s->num_cs);
         break;
     case A_TXFLR:
-        value = fifo8_num_used(&s->tx_fifo);
+        value = fifo32_num_used(&s->tx_fifo);
         break;
     case A_RXFLR:
-        value = fifo8_num_used(&s->rx_fifo);
+        value = fifo32_num_used(&s->rx_fifo);
         break;
     case A_SR:
         value = k230_dw_ssi_status(s);
@@ -544,7 +565,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     K230DwSsiState *s = K230_DW_SSI(opaque);
 
     if (k230_dw_ssi_is_dr(addr)) {
-        k230_dw_ssi_transfer_byte(s, value & 0xff);
+        k230_dw_ssi_push_tx(s, value);
         return;
     }
 
@@ -813,8 +834,8 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     K230DwSsiState *s = K230_DW_SSI(obj);
 
     memset(s->regs, 0, sizeof(s->regs));
-    fifo8_reset(&s->tx_fifo);
-    fifo8_reset(&s->rx_fifo);
+    fifo32_reset(&s->tx_fifo);
+    fifo32_reset(&s->rx_fifo);
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -846,8 +867,8 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
     .name = TYPE_K230_DW_SSI,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
-        VMSTATE_FIFO8(tx_fifo, K230DwSsiState),
-        VMSTATE_FIFO8(rx_fifo, K230DwSsiState),
+        VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
+        VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },
@@ -866,8 +887,8 @@ static void k230_dw_ssi_init(Object *obj)
                           TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->mmio);
 
-    fifo8_create(&s->tx_fifo, K230_DW_SSI_FIFO_CAPACITY);
-    fifo8_create(&s->rx_fifo, K230_DW_SSI_FIFO_CAPACITY);
+    fifo32_create(&s->tx_fifo, K230_DW_SSI_FIFO_CAPACITY);
+    fifo32_create(&s->rx_fifo, K230_DW_SSI_FIFO_CAPACITY);
     s->active_cs = -1;
 }
 
@@ -909,8 +930,8 @@ static void k230_dw_ssi_finalize(Object *obj)
 {
     K230DwSsiState *s = K230_DW_SSI(obj);
 
-    fifo8_destroy(&s->tx_fifo);
-    fifo8_destroy(&s->rx_fifo);
+    fifo32_destroy(&s->tx_fifo);
+    fifo32_destroy(&s->rx_fifo);
     g_free(s->cs_lines);
 }
 
