@@ -18,7 +18,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 
-#define K230_DW_SSI_FIFO_CAPACITY 32
+#define K230_DW_SSI_FIFO_CAPACITY 256
 
 #define K230_DW_SSI_CTRLR0_RESET            0x00004007
 #define K230_DW_SSI_SR_RESET                0x00000006
@@ -250,6 +250,10 @@ REG32(XIP_WRITE_CTRL, 0x148)
 #define K230_DW_SSI_AXIAR0_WRITABLE_MASK R_AXIAR0_AXIAR_0_31_MASK
 #define K230_DW_SSI_AXIAR1_WRITABLE_MASK R_AXIAR1_AXIAR_32_63_MASK
 
+/*
+ * 普通保存寄存器直接从 regs[] 读回，所以复位值和所有 Guest 写入路径
+ * 都必须通过各自的 writable mask，保证保留位不会进入寄存器状态。
+ */
 static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
                                      uint32_t value, uint32_t mask)
 {
@@ -299,6 +303,15 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
         return;
     }
 
+    /* 当前 profile 不支持广播片选，不能静默选择最低有效位。 */
+    if (ser & (ser - 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: multiple chip selects enabled: 0x%x\n",
+                      DEVICE(s)->canonical_path, ser);
+        k230_dw_ssi_deselect(s);
+        return;
+    }
+
     k230_dw_ssi_select(s, ctz32(ser));
 }
 
@@ -338,6 +351,18 @@ static uint32_t k230_dw_ssi_irq_status(K230DwSsiState *s)
 static void k230_dw_ssi_update_irq(K230DwSsiState *s)
 {
     qemu_set_irq(s->irq, !!k230_dw_ssi_irq_status(s));
+}
+
+static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
+{
+    /*
+     * 当前 ssi_transfer() 在一次 MMIO 回调内同步完成；禁用控制器时，
+     * 通过拉高 CS 结束外设命令，并丢弃尚未消费的 FIFO 数据。
+     */
+    k230_dw_ssi_deselect(s);
+    fifo8_reset(&s->tx_fifo);
+    fifo8_reset(&s->rx_fifo);
+    k230_dw_ssi_update_irq(s);
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -380,6 +405,7 @@ static bool k230_dw_ssi_is_dr(hwaddr addr)
 
 static bool k230_dw_ssi_is_razwi(hwaddr addr)
 {
+    /* 这些条件寄存器未集成到当前 K230 profile，统一按 RAZ/WI 处理。 */
     switch (addr) {
     case A_XIP_CTRL:
     case A_XIP_SER:
@@ -400,6 +426,7 @@ static bool k230_dw_ssi_is_razwi(hwaddr addr)
 
 static bool k230_dw_ssi_write_requires_disabled(hwaddr addr)
 {
+    /* TRM 要求这些配置在 SSIENR=0 的安全边界内更新。 */
     switch (addr) {
     case A_CTRLR0:
     case A_CTRLR1:
@@ -444,15 +471,34 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     }
 
     switch (addr) {
+    /* 这些寄存器的复位和写入路径已完成掩码，可直接返回保存值。 */
     case A_CTRLR0:
     case A_CTRLR1:
     case A_SSIENR:
     case A_MWCR:
-    case A_SER:
     case A_BAUDR:
     case A_TXFTLR:
     case A_RXFTLR:
+    case A_IMR:
+    case A_DMACR:
+    case A_AXIAWLEN:
+    case A_AXIARLEN:
+    case A_IDR:
+    case A_SSIC_VERSION_ID:
+    case A_RX_SAMPLE_DELAY:
+    case A_SPI_CTRLR0:
+    case A_DDR_DRIVE_EDGE:
+    case A_XIP_MODE_BITS:
+    case A_XIP_INCR_INST:
+    case A_XIP_WRAP_INST:
+    case A_SPIDR:
+    case A_SPIAR:
+    case A_AXIAR0:
+    case A_AXIAR1:
         value = s->regs[addr / sizeof(uint32_t)];
+        break;
+    case A_SER:
+        value = s->regs[R_SER] & MAKE_64BIT_MASK(0, s->num_cs);
         break;
     case A_TXFLR:
         value = fifo8_num_used(&s->tx_fifo);
@@ -462,9 +508,6 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case A_SR:
         value = k230_dw_ssi_status(s);
-        break;
-    case A_IMR:
-        value = s->regs[R_IMR];
         break;
     case A_ISR:
         value = k230_dw_ssi_irq_status(s);
@@ -478,27 +521,6 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     case A_MSTICR:
     case A_ICR:
         value = 0;
-        break;
-    case A_DMACR:
-    case A_AXIAWLEN:
-    case A_AXIARLEN:
-    case A_IDR:
-    case A_SSIC_VERSION_ID:
-        value = s->regs[addr / sizeof(uint32_t)];
-        break;
-    case A_RX_SAMPLE_DELAY:
-    case A_SPI_CTRLR0:
-    case A_DDR_DRIVE_EDGE:
-    case A_XIP_MODE_BITS:
-    case A_XIP_INCR_INST:
-    case A_XIP_WRAP_INST:
-        value = s->regs[addr / sizeof(uint32_t)];
-        break;
-    case A_SPIDR:
-    case A_SPIAR:
-    case A_AXIAR0:
-    case A_AXIAR1:
-        value = s->regs[addr / sizeof(uint32_t)];
         break;
     case A_AXIECR:
     case A_DONECR:
@@ -548,17 +570,31 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         k230_dw_ssi_write_masked(s, R_CTRLR1, value,
                                  K230_DW_SSI_CTRLR1_WRITABLE_MASK);
         break;
-    case A_SSIENR:
-        s->regs[R_SSIENR] = FIELD_DP32(0, SSIENR, SSIC_EN, value);
+    case A_SSIENR: {
+        bool old_enabled = k230_dw_ssi_enabled(s);
+        bool new_enabled = value & R_SSIENR_SSIC_EN_MASK;
+
+        /* 只有 0→1 和 1→0 状态转换产生副作用，重复写同值直接忽略。 */
+        if (old_enabled == new_enabled) {
+            return;
+        }
+
+        s->regs[R_SSIENR] = FIELD_DP32(0, SSIENR, SSIC_EN, new_enabled);
+        if (!new_enabled) {
+            k230_dw_ssi_abort_transfer(s);
+            return;
+        }
+
         k230_dw_ssi_update_cs(s);
         break;
+    }
     case A_MWCR:
         k230_dw_ssi_write_masked(s, R_MWCR, value,
                                  K230_DW_SSI_MWCR_WRITABLE_MASK);
         break;
     case A_SER:
+        /* SER 只保存下一事务的片选集合，不在当前事务中立即切换 CS。 */
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
-        k230_dw_ssi_update_cs(s);
         break;
     case A_BAUDR:
         k230_dw_ssi_write_masked(s, R_BAUDR, value,
