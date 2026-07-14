@@ -223,6 +223,9 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[0]), "num-cs", 5);
+    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[1]), "num-cs", 5);
+    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[2]), "num-cs", 1);
     qdev_prop_set_uint32(DEVICE(&s->dw_ssi[0]), "max-lines", 4);
     qdev_prop_set_uint32(DEVICE(&s->dw_ssi[1]), "max-lines", 4);
     qdev_prop_set_uint32(DEVICE(&s->dw_ssi[2]), "max-lines", 8);

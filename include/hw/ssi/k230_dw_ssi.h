@@ -9,7 +9,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/ssi/ssi.h"
-#include "qemu/fifo8.h"
+#include "qemu/fifo32.h"
 #include "qom/object.h"
 
 #define TYPE_K230_DW_SSI "riscv.k230.dw-ssi"
@@ -35,8 +35,8 @@ struct K230DwSsiState {
     qemu_irq irq;
     qemu_irq *cs_lines;
 
-    Fifo8 tx_fifo;
-    Fifo8 rx_fifo;
+    Fifo32 tx_fifo;
+    Fifo32 rx_fifo;
     uint32_t regs[K230_DW_SSI_NUM_REGS];
 
     uint32_t num_cs;
