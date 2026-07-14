@@ -20,19 +20,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(K230DwSsiState, K230_DW_SSI)
 #define K230_DW_SSI_NUM_REGS \
     (K230_DW_SSI_REGS_SIZE / sizeof(uint32_t))
 
-typedef struct K230DwSsiXip {
-    MemoryRegion mmio;
-    bool enabled;
-    hwaddr window_size;
-} K230DwSsiXip;
-
 struct K230DwSsiState {
     SysBusDevice parent_obj;
 
     MemoryRegion mmio;
-    K230DwSsiXip xip;
     SSIBus *spi;
-    qemu_irq irq;
     qemu_irq *cs_lines;
 
     Fifo32 tx_fifo;

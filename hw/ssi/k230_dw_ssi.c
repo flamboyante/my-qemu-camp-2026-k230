@@ -1,8 +1,7 @@
 /*
  * K230 DWC SSI compatible SPI/QSPI controller
  *
- * This model implements the register/FIFO/SSI paths needed by K230
- * controller-level tests and a read-only SPI NOR XIP window.
+ * This model implements the K230 register, FIFO, and standard SSI paths.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -25,11 +24,10 @@
 #define K230_DW_SSI_IMR_RESET               0x0000003f
 #define K230_DW_SSI_IDR_RESET               0xa1b2c3d5
 #define K230_DW_SSI_SPI_CTRLR0_SPI_RESET    0x04000200
-#define K230_DW_SSI_SPI_CTRLR0_XIP_RESET    0x28000200
+#define K230_DW_SSI_SPI_CTRLR0_FMC_RESET    0x28000200
 #define K230_DW_SSI_AXIAWLEN_RESET          0x00000700
 #define K230_DW_SSI_AXIARLEN_RESET          0x00000700
 #define K230_DW_SSI_VERSION                 0x3130332a
-#define K230_DW_SSI_DEFAULT_READ            0x03
 
 REG32(CTRLR0, 0x000)
     FIELD(CTRLR0, DFS, 0, 5)
@@ -323,44 +321,6 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
     k230_dw_ssi_select(s, ctz32(ser));
 }
 
-static uint32_t k230_dw_ssi_raw_irq(K230DwSsiState *s)
-{
-    uint32_t raw = 0;
-    uint32_t tx_threshold = FIELD_EX32(s->regs[R_TXFTLR], TXFTLR, TFT);
-    uint32_t rx_threshold = FIELD_EX32(s->regs[R_RXFTLR], RXFTLR, RFT);
-
-    if (fifo32_num_used(&s->tx_fifo) <= tx_threshold) {
-        raw = FIELD_DP32(raw, RISR, TXEIR, 1);
-    }
-
-    if (fifo32_num_used(&s->rx_fifo) > rx_threshold) {
-        raw = FIELD_DP32(raw, RISR, RXFIR, 1);
-    }
-
-    return raw;
-}
-
-static uint32_t k230_dw_ssi_irq_status(K230DwSsiState *s)
-{
-    uint32_t raw = k230_dw_ssi_raw_irq(s);
-    uint32_t mask = s->regs[R_IMR];
-    uint32_t status = 0;
-
-    status = FIELD_DP32(status, ISR, TXEIS,
-                        FIELD_EX32(raw, RISR, TXEIR) &&
-                        FIELD_EX32(mask, IMR, TXEIM));
-    status = FIELD_DP32(status, ISR, RXFIS,
-                        FIELD_EX32(raw, RISR, RXFIR) &&
-                        FIELD_EX32(mask, IMR, RXFIM));
-
-    return status;
-}
-
-static void k230_dw_ssi_update_irq(K230DwSsiState *s)
-{
-    qemu_set_irq(s->irq, !!k230_dw_ssi_irq_status(s));
-}
-
 static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
 {
     /*
@@ -370,7 +330,6 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
     k230_dw_ssi_deselect(s);
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
-    k230_dw_ssi_update_irq(s);
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -483,7 +442,6 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         if (!fifo32_is_empty(&s->rx_fifo)) {
             value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
         }
-        k230_dw_ssi_update_irq(s);
         return value;
     }
 
@@ -531,10 +489,8 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         value = k230_dw_ssi_status(s);
         break;
     case A_ISR:
-        value = k230_dw_ssi_irq_status(s);
-        break;
     case A_RISR:
-        value = k230_dw_ssi_raw_irq(s);
+        value = 0;
         break;
     case A_TXEICR:
     case A_RXOICR:
@@ -724,8 +680,6 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         }
         break;
     }
-
-    k230_dw_ssi_update_irq(s);
 }
 
 static const MemoryRegionOps k230_dw_ssi_ops = {
@@ -744,91 +698,6 @@ static const MemoryRegionOps k230_dw_ssi_ops = {
     },
 };
 
-static int k230_dw_ssi_xip_dummy_bytes(uint8_t opcode)
-{
-    switch (opcode) {
-    case 0x0b: /* FAST_READ */
-    case 0x6b: /* QOR */
-    case 0xeb: /* QIOR */
-        return 1;
-    default:
-        return 0;
-    }
-}
-
-static int k230_dw_ssi_xip_addr_bytes(uint8_t opcode)
-{
-    switch (opcode) {
-    case 0x0c: /* FAST_READ4 */
-    case 0x13: /* READ4 */
-    case 0x3c: /* DOR4 */
-    case 0x6c: /* QOR4 */
-    case 0xbc: /* DIOR4 */
-    case 0xec: /* QIOR4 */
-        return 4;
-    default:
-        return 3;
-    }
-}
-
-static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr addr,
-                                     unsigned int size)
-{
-    K230DwSsiState *s = K230_DW_SSI(opaque);
-    uint64_t value = 0;
-    uint8_t opcode = FIELD_EX32(s->regs[R_XIP_INCR_INST],
-                                XIP_INCR_INST, INCR_INST);
-    int addr_bytes;
-    int dummy;
-
-    if (!opcode) {
-        opcode = K230_DW_SSI_DEFAULT_READ;
-    }
-
-    k230_dw_ssi_deselect(s);
-    k230_dw_ssi_select(s, 0);
-    ssi_transfer(s->spi, opcode);
-
-    addr_bytes = k230_dw_ssi_xip_addr_bytes(opcode);
-    for (int i = addr_bytes - 1; i >= 0; i--) {
-        ssi_transfer(s->spi, extract32(addr, i * 8, 8));
-    }
-
-    dummy = k230_dw_ssi_xip_dummy_bytes(opcode);
-    for (int i = 0; i < dummy; i++) {
-        ssi_transfer(s->spi, 0);
-    }
-
-    for (int i = 0; i < size; i++) {
-        value = deposit64(value, i * 8, 8, ssi_transfer(s->spi, 0));
-    }
-
-    k230_dw_ssi_deselect(s);
-    return value;
-}
-
-static void k230_dw_ssi_xip_write(void *opaque, hwaddr addr,
-                                  uint64_t value, unsigned int size)
-{
-    K230DwSsiState *s = K230_DW_SSI(opaque);
-
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "%s: read-only XIP write at 0x%" HWADDR_PRIx "\n",
-                  DEVICE(s)->canonical_path, addr);
-}
-
-static const MemoryRegionOps k230_dw_ssi_xip_ops = {
-    .read = k230_dw_ssi_xip_read,
-    .write = k230_dw_ssi_xip_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .impl = {
-        .min_access_size = 1,
-        .max_access_size = 8,
-        .unaligned = false,
-    },
-};
-
-
 static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
 {
     K230DwSsiState *s = K230_DW_SSI(obj);
@@ -844,8 +713,8 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     s->regs[R_AXIARLEN] = K230_DW_SSI_AXIARLEN_RESET;
     s->regs[R_IDR] = K230_DW_SSI_IDR_RESET;
     s->regs[R_SSIC_VERSION_ID] = K230_DW_SSI_VERSION;
-    s->regs[R_SPI_CTRLR0] = s->xip.enabled ?
-        K230_DW_SSI_SPI_CTRLR0_XIP_RESET :
+    s->regs[R_SPI_CTRLR0] = s->max_lines == 8 ?
+        K230_DW_SSI_SPI_CTRLR0_FMC_RESET :
         K230_DW_SSI_SPI_CTRLR0_SPI_RESET;
 }
 
@@ -859,8 +728,6 @@ static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
             qemu_irq_raise(s->cs_lines[i]);
         }
     }
-
-    k230_dw_ssi_update_irq(s);
 }
 
 static const VMStateDescription vmstate_k230_dw_ssi = {
@@ -881,7 +748,6 @@ static void k230_dw_ssi_init(Object *obj)
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
     s->spi = ssi_create_bus(dev, "spi");
-    sysbus_init_irq(sbd, &s->irq);
 
     memory_region_init_io(&s->mmio, obj, &k230_dw_ssi_ops, s,
                           TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
@@ -895,7 +761,6 @@ static void k230_dw_ssi_init(Object *obj)
 static void k230_dw_ssi_realize(DeviceState *dev, Error **errp)
 {
     K230DwSsiState *s = K230_DW_SSI(dev);
-    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
 
     if (s->num_cs == 0 || s->num_cs > 8) {
         error_setg(errp, "%s: num-cs must be in range 1..8",
@@ -909,21 +774,8 @@ static void k230_dw_ssi_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    if (s->xip.enabled && s->xip.window_size == 0) {
-        error_setg(errp, "%s: XIP window size must be non-zero",
-                   dev->canonical_path);
-        return;
-    }
-
     s->cs_lines = g_new0(qemu_irq, s->num_cs);
     qdev_init_gpio_out_named(dev, s->cs_lines, "cs", s->num_cs);
-
-    if (s->xip.enabled) {
-        memory_region_init_io(&s->xip.mmio, OBJECT(s),
-                              &k230_dw_ssi_xip_ops, s,
-                              "k230.dw-ssi.xip", s->xip.window_size);
-        sysbus_init_mmio(sbd, &s->xip.mmio);
-    }
 }
 
 static void k230_dw_ssi_finalize(Object *obj)
@@ -938,8 +790,6 @@ static void k230_dw_ssi_finalize(Object *obj)
 static const Property k230_dw_ssi_properties[] = {
     DEFINE_PROP_UINT32("num-cs", K230DwSsiState, num_cs, 1),
     DEFINE_PROP_UINT32("max-lines", K230DwSsiState, max_lines, 1),
-    DEFINE_PROP_BOOL("has-xip", K230DwSsiState, xip.enabled, false),
-    DEFINE_PROP_SIZE("flash-window-size", K230DwSsiState, xip.window_size, 0),
 };
 
 static void k230_dw_ssi_class_init(ObjectClass *klass, const void *data)

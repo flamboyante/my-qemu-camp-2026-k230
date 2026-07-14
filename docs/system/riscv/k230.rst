@@ -20,24 +20,6 @@ The ``k230`` machine supports the following devices:
 * Platform-Level Interrupt Controller (PLIC)
 * 2 K230 Watchdog Timer
 * 5 UART
-* 3 DWC SSI compatible SPI/QSPI controllers
-* Winbond W25Q256 compatible SPI NOR flash on the SPI/OPI controller
-* Read-only flash/XIP window at ``0xC0000000``
-
-The SPI NOR contents can be provided with an MTD drive:
-
-.. code-block:: bash
-
-   $ qemu-system-riscv64 -machine k230 \
-      -drive file=flash.bin,format=raw,if=mtd \
-      -nographic
-
-The first SPI/QSPI implementation is intentionally minimal. It supports
-register probing, PIO byte transfers through the SSI bus, internal interrupt
-status registers, JEDEC ID reads, and read-only XIP/window reads. It does not
-wire SPI/QSPI interrupts to the PLIC yet, and it does not model DMA, SPI NAND,
-flash writes through the XIP window, or cycle-accurate multi-lane/Octal DDR
-signalling.
 
 Boot options
 ------------

@@ -15,7 +15,6 @@ Details about QEMU's various subsystems including how to add features to them.
    clocks
    ebpf_rss
    hexagon-sys
-   k230-spi-qspi
    migration/index
    multi-process
    reset
