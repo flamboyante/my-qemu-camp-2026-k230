@@ -29,6 +29,13 @@
 #define K230_DW_SSI_AXIARLEN_RESET          0x00000700
 #define K230_DW_SSI_VERSION                 0x3130332a
 
+/*
+ * LEARNING(P3): 这些中文注释和 TODO 是临时学习脚手架。
+ * Patch 3 完成后可使用下面的命令定位并统一清理：
+ *
+ *   rg -n "LEARNING\(P3\)|TODO\(P3-" hw/ssi include/hw/ssi tests/qtest
+ */
+
 REG32(CTRLR0, 0x000)
     FIELD(CTRLR0, DFS, 0, 5)
     FIELD(CTRLR0, FRF, 6, 2)
@@ -260,6 +267,11 @@ static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
 
 static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
 {
+    /*
+     * LEARNING(P3): CTRLR0.DFS 保存的是“实际位数减一”。例如 DFS=7
+     * 表示 8-bit frame。FIFO 的每一项仍是 uint32_t，但只有低 bits 位
+     * 属于当前 SPI 帧，其余高位不能泄漏到线路或 RX FIFO。
+     */
     unsigned int bits = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, DFS) + 1;
 
     return bits == 32 ? UINT32_MAX : MAKE_64BIT_MASK(0, bits);
@@ -268,6 +280,10 @@ static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
 
 static bool k230_dw_ssi_enabled(K230DwSsiState *s)
 {
+    /*
+     * LEARNING(P3): SSIENR 只决定传输引擎能否运行，不应自动等价为
+     * “DR 不可访问”。TX FIFO 预填和线路发送是两个不同动作。
+     */
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
 
@@ -330,6 +346,14 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
     k230_dw_ssi_deselect(s);
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
+
+    /*
+     * LEARNING(P3): abort 必须同时清理 FIFO 和跨调用状态，否则下次
+     * enable 可能从旧的 RO/EEPROM 阶段继续，形成幽灵事务。
+     */
+    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->remaining_frames = 0;
+    s->busy = false;
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -338,6 +362,11 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
     uint32_t rx_used = fifo32_num_used(&s->rx_fifo);
     uint32_t sr = 0;
 
+    /*
+     * LEARNING(P3): SR 是动态视图，不需要依赖保存的 regs[R_SR]。
+     * FIFO 水位变化后，下次读取 SR 就应立即看到新状态。
+     */
+    sr = FIELD_DP32(sr, SR, BUSY, s->busy);
     sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
     sr = FIELD_DP32(sr, SR, TFE, tx_used == 0);
     sr = FIELD_DP32(sr, SR, RFNE, rx_used != 0);
@@ -347,32 +376,116 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
     return sr;
 }
 
+static void k230_dw_ssi_run_transfer(K230DwSsiState *s);
+
 static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 {
+    /*
+     * TODO(P3-1): 判断 DR 写入是否应依赖 SSIENR 和 active_cs。
+     * 提示：先观察 /pio/dr-aliases 和 /pio/fifo-depth-256 的写法。
+     */
     if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
         return;
     }
 
     if (fifo32_is_full(&s->tx_fifo)) {
-        return
+        /*
+         * LEARNING(P3): Patch 3 只保证 FIFO 不越界。TXO 错误锁存属于
+         * IRQ Patch，因此这里暂时直接忽略超出容量的写入。
+         */
+        return;
     }
 
+    /* LEARNING(P3): 进入 FIFO 前先按 DFS 截断，FIFO 项的单位是帧。 */
     fifo32_push(&s->tx_fifo, tx & k230_dw_ssi_frame_masked(s));
+
+    /*
+     * LEARNING(P3): push 只表示“数据已准备好”；pump 会再次检查
+     * SSIENR、CS 和传输格式，决定现在发送还是继续留在 FIFO 中。
+     */
     k230_dw_ssi_run_transfer(s);
 }
 
+/*
+ * TODO(P3-2): 在这里新增“交换一个 Standard SPI 帧”的 helper。
+ *
+ * 建议先写出函数契约，再填写函数体：
+ *
+ *   static uint32_t ______(K230DwSsiState *s, uint32_t tx)
+ *
+ * 这个 helper 只负责：
+ *   1. 按 DFS 截断发送帧；
+ *   2. SRL=1 时执行内部回环；
+ *   3. 否则调用 ssi_transfer()；
+ *   4. 按 DFS 截断接收帧。
+ *
+ * 它不负责 FIFO、TMOD、CS、BUSY 或 IRQ。
+ */
 
 static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
 {
-    /* 当前 profile 不支持广播片选，不能静默选择最低有效位。 */
-    if (ser & (ser - 1)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: multiple chip selects enabled: 0x%x\n",
-                      DEVICE(s)->canonical_path, ser);
-        k230_dw_ssi_deselect(s);
+    uint32_t spi_frf;
+    uint32_t tmod;
+
+    if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
+        /*
+         * LEARNING(P3): 没有运行条件时只暂停 pump，不能在这里清空
+         * TX FIFO；预填的数据需要等到后续 enable/CS 有效时再发送。
+         */
         return;
     }
-    if(s->)
+
+    spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
+    if (spi_frf != 0) {
+        /* Patch 3 只实现 Standard SPI，增强格式由 QSPI Patch 接管。 */
+        return;
+    }
+
+    tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
+
+    switch (tmod) {
+    case 0: /* TX_AND_RX */
+        /*
+         * TODO(P3-3): 消费 TX FIFO，并把每帧返回值压入 RX FIFO。
+         *
+         * 填写前先回答：
+         *   - 循环条件观察哪个 FIFO？
+         *   - tx 在什么时候 pop？
+         *   - RX FIFO 满时能否继续 push？
+         *   - 一次 TX 帧最多对应几个 RX FIFO 项？
+         */
+        break;
+    case 1: /* TX_ONLY */
+        /*
+         * TODO(P3-4): 消费 TX FIFO，但丢弃线路返回值。
+         *
+         * LEARNING(P3): SPI 线路本身仍会同时返回数据；TX_ONLY 的含义
+         * 是控制器不把返回值写入 RX FIFO，而不是“线路没有 RX”。
+         */
+        break;
+    case 2: /* RX_ONLY */
+        /*
+         * TODO(P3-5): 一个 dummy DR 启动 NDF + 1 个接收帧。
+         *
+         * 建议分成两个小步骤：
+         *   1. IDLE 时检查并消费一个 dummy TX FIFO 项，初始化状态；
+         *   2. RX_ONLY 阶段按 remaining_frames 生成接收帧。
+         *
+         * RX FIFO 满时要保留 phase/remaining_frames，不能忙等。
+         */
+        break;
+    case 3: /* EEPROM_READ */
+        /*
+         * TODO(P3-6): 先发送命令阶段，再自动接收 NDF + 1 帧。
+         *
+         * COMMAND 阶段：消费 TX FIFO，线路返回值无效。
+         * DATA 阶段：不再消费命令帧，使用 dummy 产生接收时钟。
+         * 两个阶段不能共用 TR 的“发送一次就保存一次 RX”逻辑。
+         */
+        break;
+    default:
+        g_assert_not_reached();
+    }
 }
 
 
@@ -440,8 +553,15 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
 
     if (k230_dw_ssi_is_dr(addr)) {
         if (!fifo32_is_empty(&s->rx_fifo)) {
+            /* LEARNING(P3): DR0..DR35 都是同一个 RX FIFO 的别名。 */
             value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
         }
+
+        /*
+         * TODO(P3-7): RX FIFO 腾出空间后，是否需要恢复未完成的接收？
+         * 提示：观察 phase、remaining_frames 和 RX FIFO 是否仍然满。
+         */
+        k230_dw_ssi_run_transfer(s);
         return value;
     }
 
@@ -563,6 +683,11 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         }
 
         k230_dw_ssi_update_cs(s);
+        /*
+         * LEARNING(P3): enable 不只是改变寄存器位，还可能让之前预填
+         * 的 TX FIFO 首次具备发送条件，因此需要主动运行 pump。
+         */
+        k230_dw_ssi_run_transfer(s);
         break;
     }
     case A_MWCR:
@@ -705,6 +830,9 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     memset(s->regs, 0, sizeof(s->regs));
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
+    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->remaining_frames = 0;
+    s->busy = false;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -736,6 +864,9 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
         VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
         VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
+        VMSTATE_INT32(phase, K230DwSsiState),
+        VMSTATE_UINT32(remaining_frames, K230DwSsiState),
+        VMSTATE_BOOL(busy, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },

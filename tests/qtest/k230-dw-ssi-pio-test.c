@@ -23,6 +23,10 @@ static void test_dr_aliases_share_one_fifo(void)
 {
     QTestState *qts = k230_ssi_start();
 
+    /*
+     * LEARNING(P3): SER=0 表示当前不在线路上传输。测试借此只观察
+     * DR alias 是否把帧写入同一个 TX FIFO，不受 transfer pump 干扰。
+     */
     k230_ssi_configure(qts, K230_SPI1_BASE, K230_SSI_TMOD_TR, 32, 0);
     k230_ssi_enable_cs(qts, K230_SPI1_BASE, 0);
 
@@ -57,8 +61,6 @@ static void test_fifo_depth_is_256_frames(void)
     k230_ssi_write_frame(qts, K230_SPI1_BASE, UINT32_MAX);
     g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_TXFLR),
                      ==, K230_SSI_FIFO_DEPTH);
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
-                    K230_SSI_INT_TXO, ==, K230_SSI_INT_TXO);
 
     qtest_quit(qts);
 }
@@ -120,6 +122,11 @@ static void test_tmod_receive_only_uses_ndf(void)
 
     configure_loopback(qts, K230_SSI_TMOD_RO, 8, 3);
     k230_ssi_enable_cs(qts, K230_SPI1_BASE, 1);
+    /*
+     * LEARNING(P3): dummy word 是启动 RX-only 的一个 TX FIFO 帧，
+     * 不等同于 QSPI SPI_CTRLR0.WAIT_CYCLES 描述的 dummy cycle。
+     */
+    k230_ssi_write_frame(qts, K230_SPI1_BASE, 0);
     k230_ssi_wait_mask(qts, K230_SPI1_BASE, K230_SSI_RXFLR,
                        UINT32_MAX, 4);
     for (int i = 0; i < 4; i++) {
@@ -168,25 +175,6 @@ static void test_disable_stops_transfer_and_clears_fifos(void)
     qtest_quit(qts);
 }
 
-static void test_dynamic_watermark_status(void)
-{
-    QTestState *qts = k230_ssi_start();
-
-    k230_ssi_configure(qts, K230_SPI1_BASE, K230_SSI_TMOD_TR, 8, 0);
-    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_TXFTLR, 3);
-    k230_ssi_enable_cs(qts, K230_SPI1_BASE, 0);
-
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
-                    K230_SSI_INT_TXE, ==, K230_SSI_INT_TXE);
-    for (int i = 0; i < 4; i++) {
-        k230_ssi_write_frame(qts, K230_SPI1_BASE, i);
-    }
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
-                    K230_SSI_INT_TXE, ==, 0);
-
-    qtest_quit(qts);
-}
-
 void k230_ssi_register_pio_tests(void)
 {
     qtest_add_func("/k230-dw-ssi/pio/dr-aliases",
@@ -205,7 +193,4 @@ void k230_ssi_register_pio_tests(void)
                    test_tmod_eeprom_read_has_separate_rx_count);
     qtest_add_func("/k230-dw-ssi/pio/disable-clears-fifo",
                    test_disable_stops_transfer_and_clears_fifos);
-    qtest_add_func("/k230-dw-ssi/pio/dynamic-watermark",
-                   test_dynamic_watermark_status);
 }
-
