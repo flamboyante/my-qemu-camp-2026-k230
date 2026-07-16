@@ -30,10 +30,10 @@
 #define K230_DW_SSI_VERSION                 0x3130332a
 
 /*
- * LEARNING(P3): 这些中文注释和 TODO 是临时学习脚手架。
+ * LEARNING(P3): 这些中文注释是临时学习脚手架。
  * Patch 3 完成后可使用下面的命令定位并统一清理：
  *
- *   rg -n "LEARNING\(P3\)|TODO\(P3-" hw/ssi include/hw/ssi tests/qtest
+ *   rg -n "LEARNING\(P3" hw/ssi include/hw/ssi tests/qtest
  */
 
 REG32(CTRLR0, 0x000)
@@ -353,7 +353,6 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
      */
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
-    s->busy = false;
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -366,7 +365,7 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
      * LEARNING(P3): SR 是动态视图，不需要依赖保存的 regs[R_SR]。
      * FIFO 水位变化后，下次读取 SR 就应立即看到新状态。
      */
-    sr = FIELD_DP32(sr, SR, BUSY, s->busy);
+    sr = FIELD_DP32(sr, SR, BUSY, s->phase != K230_DW_SSI_PHASE_IDLE);
     sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
     sr = FIELD_DP32(sr, SR, TFE, tx_used == 0);
     sr = FIELD_DP32(sr, SR, RFNE, rx_used != 0);
@@ -381,10 +380,11 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s);
 static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 {
     /*
-     * TODO(P3-1): 判断 DR 写入是否应依赖 SSIENR 和 active_cs。
-     * 提示：先观察 /pio/dr-aliases 和 /pio/fifo-depth-256 的写法。
+     * LEARNING(P3-1): SSIENR=0 时忽略 DR 写；SSIENR=1、SER=0 时
+     * 允许预填 TX FIFO。/pio/dr-aliases 与 /pio/dr-disabled-ignored
+     * 分别覆盖这两个边界。
      */
-    if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
+    if (!k230_dw_ssi_enabled(s)) {
         return;
     }
 
@@ -407,11 +407,7 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 }
 
 /*
- * TODO(P3-2): 在这里新增“交换一个 Standard SPI 帧”的 helper。
- *
- * 建议先写出函数契约，再填写函数体：
- *
- *   static uint32_t ______(K230DwSsiState *s, uint32_t tx)
+ * LEARNING(P3-2): 交换一个 Standard SPI 帧的 helper。
  *
  * 这个 helper 只负责：
  *   1. 按 DFS 截断发送帧；
@@ -421,6 +417,22 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
  *
  * 它不负责 FIFO、TMOD、CS、BUSY 或 IRQ。
  */
+static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
+                                        uint32_t tx)
+{
+    uint32_t mask = k230_dw_ssi_frame_masked(s);
+    uint32_t rx;
+
+    tx &= mask;
+
+    if (FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SRL)) {
+        rx = tx;                         /* 内部回环 */
+    } else {
+        rx = ssi_transfer(s->spi, tx);   /* 交给 SPI 总线 */
+    }
+
+    return rx & mask;
+}
 
 static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
 {
@@ -428,16 +440,12 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
     uint32_t tmod;
 
     if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
-        /*
-         * LEARNING(P3): 没有运行条件时只暂停 pump，不能在这里清空
-         * TX FIFO；预填的数据需要等到后续 enable/CS 有效时再发送。
-         */
         return;
     }
 
     spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     if (spi_frf != 0) {
-        /* Patch 3 只实现 Standard SPI，增强格式由 QSPI Patch 接管。 */
+        /* FIXME(P3): Patch 3 只实现 Standard SPI，增强格式由 QSPI Patch 接管。 */
         return;
     }
 
@@ -446,26 +454,37 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
     switch (tmod) {
     case 0: /* TX_AND_RX */
         /*
-         * TODO(P3-3): 消费 TX FIFO，并把每帧返回值压入 RX FIFO。
+         * LEARNING(P3-3): 消费 TX FIFO，并把每帧返回值压入 RX FIFO。
          *
-         * 填写前先回答：
+         * 复盘问题：
          *   - 循环条件观察哪个 FIFO？
          *   - tx 在什么时候 pop？
          *   - RX FIFO 满时能否继续 push？
          *   - 一次 TX 帧最多对应几个 RX FIFO 项？
          */
+        while (!fifo32_is_empty(&s->tx_fifo)) {
+            uint32_t tx = fifo32_pop(&s->tx_fifo);
+            uint32_t rx = k230_dw_ssi_send_frame(s, tx);
+            if(!fifo32_is_full(&s->rx_fifo)) {
+                fifo32_push(&s->rx_fifo, rx);
+            }
+        }
         break;
     case 1: /* TX_ONLY */
         /*
-         * TODO(P3-4): 消费 TX FIFO，但丢弃线路返回值。
+         * LEARNING(P3-4): 消费 TX FIFO，但丢弃线路返回值。
          *
          * LEARNING(P3): SPI 线路本身仍会同时返回数据；TX_ONLY 的含义
          * 是控制器不把返回值写入 RX FIFO，而不是“线路没有 RX”。
          */
+        while (!fifo32_is_empty(&s->tx_fifo)) {
+            uint32_t tx = fifo32_pop(&s->tx_fifo);
+            k230_dw_ssi_send_frame(s, tx);
+        }
         break;
     case 2: /* RX_ONLY */
         /*
-         * TODO(P3-5): 一个 dummy DR 启动 NDF + 1 个接收帧。
+         * LEARNING(P3-5): 一个 dummy DR 启动 NDF + 1 个接收帧。
          *
          * 建议分成两个小步骤：
          *   1. IDLE 时检查并消费一个 dummy TX FIFO 项，初始化状态；
@@ -473,15 +492,71 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
          *
          * RX FIFO 满时要保留 phase/remaining_frames，不能忙等。
          */
+        switch (s->phase) {
+            case K230_DW_SSI_PHASE_IDLE:
+                /* 没有 dummy DR，无法启动 RX_ONLY */
+                if (fifo32_is_empty(&s->tx_fifo)) {
+                    break;
+                }
+                /* 消费 dummy DR，启动 RX_ONLY */
+                fifo32_pop(&s->tx_fifo);
+                s->phase = K230_DW_SSI_PHASE_RX_ONLY;
+                s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
+
+            case K230_DW_SSI_PHASE_RX_ONLY:
+                /* 处理接收帧 */
+                while (!fifo32_is_full(&s->rx_fifo) && s->remaining_frames > 0) {
+                    uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+                    fifo32_push(&s->rx_fifo, rx);
+                    s->remaining_frames--;
+                }
+                if (s->remaining_frames == 0) {
+                    s->phase = K230_DW_SSI_PHASE_IDLE;
+                }
+                break;
+        }
         break;
     case 3: /* EEPROM_READ */
         /*
-         * TODO(P3-6): 先发送命令阶段，再自动接收 NDF + 1 帧。
+         * LEARNING(P3-6): 先发送命令阶段，再自动接收 NDF + 1 帧。
          *
          * COMMAND 阶段：消费 TX FIFO，线路返回值无效。
          * DATA 阶段：不再消费命令帧，使用 dummy 产生接收时钟。
          * 两个阶段不能共用 TR 的“发送一次就保存一次 RX”逻辑。
          */
+        switch (s->phase) {
+            case K230_DW_SSI_PHASE_IDLE:
+                if(!fifo32_is_empty(&s->tx_fifo)) {
+                    s->phase = K230_DW_SSI_PHASE_EEPROM_COMMAND;
+                }
+                else
+                    break;
+            case K230_DW_SSI_PHASE_EEPROM_COMMAND:
+                /* 没有命令帧，无法启动 EEPROM_READ */
+                if (fifo32_is_empty(&s->tx_fifo))
+                {
+                    break;
+                }
+                while (!fifo32_is_empty(&s->tx_fifo)) {
+                    /* 消费命令帧，启动 EEPROM_READ */
+                    uint32_t tx = fifo32_pop(&s->tx_fifo);
+                    k230_dw_ssi_send_frame(s, tx);
+                }
+                s->phase = K230_DW_SSI_PHASE_EEPROM_DATA;
+                s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
+
+            case K230_DW_SSI_PHASE_EEPROM_DATA:
+                /* 处理接收帧 */
+                while (!fifo32_is_full(&s->rx_fifo) && s->remaining_frames > 0) {
+                    uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+                    fifo32_push(&s->rx_fifo, rx);
+                    s->remaining_frames--;
+                }
+                if (s->remaining_frames == 0) {
+                    s->phase = K230_DW_SSI_PHASE_IDLE;
+                }
+                break;
+        }
         break;
     default:
         g_assert_not_reached();
@@ -558,8 +633,8 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         }
 
         /*
-         * TODO(P3-7): RX FIFO 腾出空间后，是否需要恢复未完成的接收？
-         * 提示：观察 phase、remaining_frames 和 RX FIFO 是否仍然满。
+         * LEARNING(P3-7): RX FIFO 腾出空间后恢复未完成的接收；观察
+         * phase、remaining_frames 与 RX FIFO 是否仍然满。
          */
         k230_dw_ssi_run_transfer(s);
         return value;
@@ -695,8 +770,10 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
                                  K230_DW_SSI_MWCR_WRITABLE_MASK);
         break;
     case A_SER:
-        /* SER 只保存下一事务的片选集合，不在当前事务中立即切换 CS。 */
+        /* SER 选择后，已预填的 TX FIFO 首次具备线路发送条件。 */
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
+        k230_dw_ssi_update_cs(s);
+        k230_dw_ssi_run_transfer(s);
         break;
     case A_BAUDR:
         k230_dw_ssi_write_masked(s, R_BAUDR, value,
@@ -832,7 +909,6 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     fifo32_reset(&s->rx_fifo);
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
-    s->busy = false;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -864,9 +940,8 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
         VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
         VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
-        VMSTATE_INT32(phase, K230DwSsiState),
+        VMSTATE_UINT32(phase, K230DwSsiState),
         VMSTATE_UINT32(remaining_frames, K230DwSsiState),
-        VMSTATE_BOOL(busy, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },

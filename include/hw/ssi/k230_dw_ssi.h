@@ -47,6 +47,7 @@ typedef enum K230DwSsiPhase {
     K230_DW_SSI_PHASE_EEPROM_DATA,
 } K230DwSsiPhase;
 
+
 struct K230DwSsiState {
     SysBusDevice parent_obj;
 
@@ -58,17 +59,8 @@ struct K230DwSsiState {
     Fifo32 rx_fifo;
     uint32_t regs[K230_DW_SSI_NUM_REGS];
 
-    /* LEARNING(P3): Standard SPI 当前处于哪个跨调用阶段。 */
-    int32_t phase;
-
-    /* LEARNING(P3): RO/EEPROM 数据阶段尚未产生的接收帧数。 */
+    uint32_t phase;
     uint32_t remaining_frames;
-
-    /*
-     * LEARNING(P3): BUSY 描述传输引擎是否仍有未完成工作，不能直接
-     * 使用 SSIENR 或 SER 推导，因为“控制器使能/CS 有效”不等于忙。
-     */
-    bool busy;
 
     uint32_t num_cs;
     uint32_t max_lines;
