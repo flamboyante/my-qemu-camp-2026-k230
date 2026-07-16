@@ -301,6 +301,7 @@ qtests_riscv64 = ['riscv-csr-test'] + \
    ['k230-wdt-test', 'k230-dw-ssi-test'] : [])
   (config_all_devices.has_key('CONFIG_K230') ? ['k230-wdt-test',
                                                 'k230-rmu-test'] : [])
+   ['k230-ddr-test', 'k230-wdt-test'] : [])
 
 qtests_hexagon = ['boot-serial-test']
 
