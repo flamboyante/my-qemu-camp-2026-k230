@@ -21,7 +21,9 @@
 #include "system/device_tree.h"
 #include "system/system.h"
 #include "system/memory.h"
+#include "system/blockdev.h"
 #include "target/riscv/cpu.h"
+#include "hw/block/flash.h"
 #include "hw/core/loader.h"
 #include "hw/core/sysbus.h"
 #include "hw/riscv/k230.h"
@@ -31,6 +33,7 @@
 #include "hw/intc/sifive_plic.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
+#include "hw/ssi/ssi.h"
 
 /* Align K230_SDK k230_canmv_defconfig */
 #define K230_DIRECT_OPENSBI_ADDR 0x8000000
@@ -476,6 +479,96 @@ static void k230_firmware_boot(K230MachineState *s, MachineState *machine)
                               memmap[K230_DEV_BOOTROM].size, 0, 0);
 }
 
+static char *k230_machine_get_spi_flash(Object *obj, Error **errp)
+{
+    K230MachineState *s = RISCV_K230_MACHINE(obj);
+
+    /*
+     * QOM 字符串属性的 getter：返回当前机器配置的 Flash 类型名。
+     *
+     * 属性系统会接管返回字符串的释放，因此这里必须返回副本，不能
+     * 直接返回 s->spi_flash_model 指向的内部字符串。
+     */
+    return g_strdup(s->spi_flash_model);
+}
+
+static void k230_machine_set_spi_flash(Object *obj, const char *value,
+                                       Error **errp)
+{
+    K230MachineState *s = RISCV_K230_MACHINE(obj);
+
+    /*
+     * QOM 字符串属性的 setter：只保存用户选择的设备类型名，不在这里
+     * 创建 Flash。此时机器可能还没有完成 SoC/bus 初始化，真正的设备
+     * 创建会延迟到 k230_machine_init()，确保目标 SSIBus 已经存在。
+     */
+    g_free(s->spi_flash_model);
+    s->spi_flash_model = g_strdup(value);
+}
+
+static void k230_connect_spi_flash(K230DwSsiState *ssi, unsigned int cs,
+                                   const char *flash_type, DriveInfo *dinfo)
+{
+    ObjectClass *flash_class;
+    DeviceState *flash;
+    qemu_irq flash_cs;
+
+    /*
+     * 将一个 QEMU M25P80 兼容 Flash 连接到指定的 DesignWare SSI 控制器。
+     * 这个函数只负责“板级接线”，不实现 Flash 协议；opcode、地址、WEL、
+     * 擦除和编程等行为由 hw/block/m25p80.c 中的 Flash 模型负责。
+     *
+     * 按顺序完成：
+     *   1. 检查 flash_type 是已注册、非 abstract 的 TYPE_M25P80 子类型；
+     *   2. 用 qdev_new(flash_type) 创建设备对象；
+     *   3. dinfo 非空时，在 realize 前把 MTD 后端交给 Flash；
+     *   4. 在 ssi->spi 这条 SSIBus 上 realize Flash；
+     *   5. 通过 SSI GPIO 将控制器的第 cs 路片选连接到该 Flash。
+     *
+     * 调用者负责传入正确的 SSI 实例和 CS 编号；本板上 SDK 的 spi0
+     * 对应 s->soc.dw_ssi[2]，且当前只使用 CS0。没有 -drive 时，Flash
+     * 仍应创建为全擦除状态，而不是因为 dinfo == NULL 而跳过创建。
+     *
+     * 不要保存 Flash 私有状态，也不要访问 0xc0000000 XIP window。
+     */
+
+    /* 1. 先验证用户给出的 QOM 类型确实是可实例化的 SPI NOR。 */
+    flash_class = module_object_class_by_name(flash_type);
+    if (!flash_class || object_class_is_abstract(flash_class) ||
+        !object_class_dynamic_cast(flash_class, TYPE_M25P80)) {
+        error_report("'%s' is either abstract or not a subtype of m25p80",
+                     flash_type);
+        exit(EXIT_FAILURE);
+    }
+
+    /* 2. 按型号名称创建具体 Flash，例如 w25q256。 */
+    flash = qdev_new(flash_type);
+
+    /*
+     * 3. DriveInfo 只是命令行 -drive 的描述对象；Flash 设备真正需要的
+     * 是它对应的 BlockBackend。没有 -drive 时传 NULL，让 m25p80 使用
+     * 自己创建的空白 Flash 存储。
+     */
+    if (dinfo) {
+        qdev_prop_set_drive(flash, "drive", blk_by_legacy_dinfo(dinfo));
+    }
+
+    /*
+     * 4. 把 Flash realize 到该 SSI 控制器创建的 SSIBus 上。
+     * realize 成功后，SSIBus 会记录这个设备占用的 CS；调用
+     * qdev_realize_and_unref() 后不需要再保存 flash 指针。
+     */
+    qdev_realize_and_unref(flash, BUS(ssi->spi), &error_fatal);
+
+    /*
+     * 5. Flash 暴露一个名为 SSI_GPIO_CS 的输入 GPIO，控制器暴露一个
+     * 名为 "cs" 的输出 GPIO 数组。将控制器的第 cs 路输出接到 Flash
+     * 的片选输入，之后控制器切换 SER/CS 时，Flash 就能收到片选变化。
+     */
+    flash_cs = qdev_get_gpio_in_named(flash, SSI_GPIO_CS, 0);
+    qdev_connect_gpio_out_named(DEVICE(ssi), "cs", cs, flash_cs);
+}
+
 static void k230_machine_done(Notifier *notifier, void *data)
 {
     K230MachineState *s = container_of(notifier, K230MachineState,
@@ -507,6 +600,19 @@ static void k230_machine_init(MachineState *machine)
                             TYPE_RISCV_K230_SOC);
     qdev_realize(DEVICE(&s->soc), NULL, &error_fatal);
 
+    if (s->spi_flash_model) {
+        /*
+         * LEARNING(P4)：这里是可选的板级外设装配点。
+         *
+         * 先 realize SoC，得到内部的 SSI 总线，再把外部 Flash 挂上去。
+         * SDK 的 spi0 MMIO 地址 0x91584000 对应 dw_ssi[2]，不是数组中的
+         * dw_ssi[0]；Patch 4 的 DTS 只声明 spi0 的 CS0。
+         */
+        k230_connect_spi_flash(&s->soc.dw_ssi[2], 0,
+                               s->spi_flash_model,
+                               drive_get(IF_MTD, 0, 0));
+    }
+
     /* Data Memory */
     memory_region_add_subregion(sys_mem, memmap[K230_DEV_DDRC].base,
                                 machine->ram);
@@ -519,6 +625,17 @@ static void k230_machine_instance_init(Object *obj)
 {
 }
 
+static void k230_machine_instance_finalize(Object *obj)
+{
+    K230MachineState *s = RISCV_K230_MACHINE(obj);
+
+    /*
+     * 释放 setter 为机器属性保存的类型名。Flash 设备本身由 QOM 的
+     * 对象树管理，这里只负责 K230MachineState 自己拥有的字符串。
+     */
+    g_clear_pointer(&s->spi_flash_model, g_free);
+}
+
 static void k230_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -528,6 +645,18 @@ static void k230_machine_class_init(ObjectClass *oc, const void *data)
     mc->default_cpus = 1;
     mc->default_ram_id = "riscv.K230.ram"; /* DDR */
     mc->default_ram_size = memmap[K230_DEV_DDRC].size;
+
+    /*
+     * 注册 -machine k230,spi-flash=<model>。
+     *
+     * 这里只注册配置入口；属性值由 setter 保存，设备实例化和总线连接
+     * 延迟到 k230_machine_init()，从而保持 Machine 与 SoC 的职责分离。
+     */
+    object_class_property_add_str(oc, "spi-flash",
+                                  k230_machine_get_spi_flash,
+                                  k230_machine_set_spi_flash);
+    object_class_property_set_description(
+        oc, "spi-flash", "Attach an M25P80-compatible flash to spi0 CS0");
 }
 
 static const TypeInfo k230_machine_typeinfo = {
@@ -535,6 +664,7 @@ static const TypeInfo k230_machine_typeinfo = {
     .parent     = TYPE_MACHINE,
     .class_init = k230_machine_class_init,
     .instance_init = k230_machine_instance_init,
+    .instance_finalize = k230_machine_instance_finalize,
     .instance_size = sizeof(K230MachineState),
     .interfaces = riscv64_machine_interfaces,
 };

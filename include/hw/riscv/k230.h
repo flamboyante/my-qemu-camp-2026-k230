@@ -52,6 +52,9 @@ typedef struct K230MachineState {
     /*< public >*/
     K230SoCState soc;
     Notifier machine_done;
+
+    /* LEARNING(P4): 只保存板级器件选择，不保存 Flash 协议或存储状态。 */
+    char *spi_flash_model;
 } K230MachineState;
 
 enum {

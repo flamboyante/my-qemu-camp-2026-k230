@@ -24,39 +24,146 @@
 #define FLASH_CMD_JEDEC         0x9f
 #define FLASH_SR_WIP            BIT(0)
 
-static void flash_transaction(QTestState *qts, const uint8_t *tx,
-                              uint8_t *rx, size_t len)
+static void flash_write_transaction(QTestState *qts,
+                                    const uint8_t *command,
+                                    size_t command_len)
 {
-    k230_ssi_standard_transaction(qts, K230_SPI0_BASE, tx, rx, len);
+    /*
+     * 这是 Flash 的统一 Data-OUT 入口：command 中按 Flash 线协议排列
+     * opcode、地址和待写入数据，函数只负责通过 SSI 发出这些字节。
+     * 因为 TX_ONLY 不产生需要消费的 RX 数据，所以不会把“发送阶段的
+     * 回读值”混入测试结果。
+     *
+     * 必须保持的顺序：
+     *   configure disabled -> SER=0、SSIENR=1 -> 预填 command[]
+     *   -> SER=BIT(0) -> 等 TXFLR=0/BUSY=0 -> SSIENR=0。
+     *
+     * SSIENR=0 产生 CS 上升沿；WREN、Page Program 和 Sector Erase
+     * 都依赖这个事务结束边界。不要用旧的 TR helper 代替 TO。
+     */
+    g_assert_nonnull(command);
+    g_assert_cmpuint(command_len, >, 0);
+    g_assert_cmpuint(command_len, <=, K230_SSI_FIFO_DEPTH);
+
+    /* TO 只发送 TX FIFO 中的帧，不把线路返回值写入 RX FIFO。 */
+    k230_ssi_configure(qts, K230_SPI0_BASE, K230_SSI_TMOD_TO, 8, 0);
+
+    /*
+     * 先撤销旧的 SER，再使能控制器。这样即使上一条事务结束时 SER
+     * 仍为 1，也不会在命令预填前重新选中 Flash。
+     */
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
+
+    for (size_t i = 0; i < command_len; i++) {
+        k230_ssi_write_frame(qts, K230_SPI0_BASE, command[i]);
+    }
+
+    /* SER 的上升沿/下降沿由控制器模型转换为 Flash 的 CS 变化。 */
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, BIT(0));
+    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_TXFLR,
+                       UINT32_MAX, 0);
+    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_SR,
+                       K230_SSI_SR_BUSY, 0);
+
+    /* 禁用控制器，释放 CS，并清理本次事务残留的 FIFO/阶段状态。 */
+    k230_ssi_disable(qts, K230_SPI0_BASE);
+}
+
+static void flash_read_transaction(QTestState *qts,
+                                   const uint8_t *command,
+                                   size_t command_len,
+                                   uint8_t *data, size_t data_len)
+{
+    /*
+     * 这是 Flash 的统一 Data-IN 入口：先发送 command 中的 opcode、地址和
+     * dummy 字节，再从 RX FIFO 取出 data_len 个有效数据字节。调用者不需要
+     * 处理 SSI 的 CTRLR0/CTRLR1、SER 或 FIFO 时序，只描述一条 Flash 事务。
+     *
+     * command[] 只包含 opcode/address/协议 dummy；CTRLR1 写
+     * data_len - 1。SER 拉起后，Patch 3 自动生成 data_len 个接收帧。
+     * RX FIFO 中不应出现 command 阶段的返回值。
+     *
+     * data_len 必须大于 0；完成后等待 BUSY=0，再写 SSIENR=0 撤销 CS。
+     */
+    g_assert_nonnull(command);
+    g_assert_nonnull(data);
+    g_assert_cmpuint(command_len, >, 0);
+    g_assert_cmpuint(command_len, <=, K230_SSI_FIFO_DEPTH);
+    g_assert_cmpuint(data_len, >, 0);
+    /* 当前 helper 在 RX FIFO 中一次收齐数据，因此不能让 FIFO 填满。 */
+    g_assert_cmpuint(data_len, <, K230_SSI_FIFO_DEPTH);
+
+    /*
+     * NDF 编码的是“接收帧数减一”，所以 data_len=1 时必须写 0，
+     * data_len=6 时必须写 5。
+     */
+    k230_ssi_configure(qts, K230_SPI0_BASE,
+                       K230_SSI_TMOD_EEPROM_READ, 8, data_len - 1);
+
+    /* 和 TX_ONLY 一样，先确保旧事务的 SER 不会影响命令预填。 */
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
+
+    /* 命令阶段只写 opcode/address/dummy，不为数据阶段写 dummy 帧。 */
+    for (size_t i = 0; i < command_len; i++) {
+        k230_ssi_write_frame(qts, K230_SPI0_BASE, command[i]);
+    }
+
+    /*
+     * SER 选中 Flash 后，Patch 3 会先消费 command[]，再根据 NDF 自动
+     * 发送 data_len 个 dummy 帧，并把返回值放入 RX FIFO。
+     */
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, BIT(0));
+    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_RXFLR,
+                       UINT32_MAX, data_len);
+    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_SR,
+                       K230_SSI_SR_BUSY, 0);
+
+    for (size_t i = 0; i < data_len; i++) {
+        data[i] = k230_ssi_read_frame(qts, K230_SPI0_BASE);
+    }
+
+    /* 读完 RX FIFO 后再禁用，完成 CS 事务边界。 */
+    k230_ssi_disable(qts, K230_SPI0_BASE);
 }
 
 static void flash_read(QTestState *qts, uint8_t opcode, uint32_t address,
                        unsigned int addr_bytes, unsigned int dummy_bytes,
                        uint8_t *data, size_t len)
 {
+    /*
+     * 组装普通 SPI 读命令的前缀：opcode + 大端地址 + dummy 字节。
+     * 地址宽度和 dummy 数量由测试用例传入，因此同一个 helper 可覆盖
+     * 3-byte read、4-byte read 和带 dummy 的 fast read。
+     */
     size_t prefix = 1 + addr_bytes + dummy_bytes;
-    g_autofree uint8_t *tx = g_new0(uint8_t, prefix + len);
-    g_autofree uint8_t *rx = g_new0(uint8_t, prefix + len);
+    g_autofree uint8_t *command = g_new0(uint8_t, prefix);
 
-    tx[0] = opcode;
+    command[0] = opcode;
     for (unsigned int i = 0; i < addr_bytes; i++) {
-        tx[1 + i] = address >> (8 * (addr_bytes - i - 1));
+        command[1 + i] = address >> (8 * (addr_bytes - i - 1));
     }
-    flash_transaction(qts, tx, rx, prefix + len);
-    memcpy(data, rx + prefix, len);
+    memset(command + 1 + addr_bytes, 0xff, dummy_bytes);
+    flash_read_transaction(qts, command, prefix, data, len);
 }
 
 static uint8_t flash_read_status(QTestState *qts)
 {
-    uint8_t tx[] = { FLASH_CMD_RDSR, 0 };
-    uint8_t rx[ARRAY_SIZE(tx)];
+    /* RDSR 是一字节命令、后一字节返回状态的最小 Data-IN 事务。 */
+    uint8_t command = FLASH_CMD_RDSR;
+    uint8_t status;
 
-    flash_transaction(qts, tx, rx, ARRAY_SIZE(tx));
-    return rx[1];
+    flash_read_transaction(qts, &command, 1, &status, 1);
+    return status;
 }
 
 static void flash_wait_ready(QTestState *qts)
 {
+    /*
+     * 编程/擦除期间 Flash 将 WIP 置 1。通过重复读取状态寄存器等待设备
+     * 完成，并推进虚拟时钟让 QEMU 的异步 Flash 操作有机会结束。
+     */
     for (int i = 0; i < 1000; i++) {
         if (!(flash_read_status(qts) & FLASH_SR_WIP)) {
             return;
@@ -69,22 +176,26 @@ static void flash_wait_ready(QTestState *qts)
 
 static void flash_write_enable(QTestState *qts)
 {
+    /*
+     * WREN 必须是一条独立事务；事务结束时 CS 拉高，Flash 才会锁存 WEL。
+     * 后续 Page Program 或 Sector Erase 还必须重新发出自己的事务。
+     */
     uint8_t cmd = FLASH_CMD_WREN;
 
-    flash_transaction(qts, &cmd, NULL, 1);
+    flash_write_transaction(qts, &cmd, 1);
 }
 
 static void test_jedec_id(void)
 {
     K230SsiFlashImage image;
     QTestState *qts = k230_ssi_start_with_flash(&image);
-    uint8_t tx[] = { FLASH_CMD_JEDEC, 0, 0, 0 };
-    uint8_t rx[ARRAY_SIZE(tx)];
+    uint8_t command = FLASH_CMD_JEDEC;
+    uint8_t id[6];
 
-    flash_transaction(qts, tx, rx, ARRAY_SIZE(tx));
-    g_assert_cmphex(rx[1], ==, 0xef);
-    g_assert_cmphex(rx[2], ==, 0x40);
-    g_assert_cmphex(rx[3], ==, 0x19);
+    flash_read_transaction(qts, &command, 1, id, sizeof(id));
+    g_assert_cmphex(id[0], ==, 0xef);
+    g_assert_cmphex(id[1], ==, 0x40);
+    g_assert_cmphex(id[2], ==, 0x19);
 
     qtest_quit(qts);
     k230_ssi_flash_image_clear(&image);
@@ -137,7 +248,7 @@ static void test_page_program_and_readback(void)
     tx[2] = addr >> 8;
     tx[3] = addr;
     memcpy(tx + 4, payload, sizeof(payload));
-    flash_transaction(qts, tx, NULL, sizeof(tx));
+    flash_write_transaction(qts, tx, sizeof(tx));
     flash_wait_ready(qts);
 
     flash_read(qts, FLASH_CMD_READ, addr, 3, 0, actual, sizeof(actual));
@@ -160,7 +271,7 @@ static void test_sector_erase_and_readback(void)
 
     memset(expected, 0xff, sizeof(expected));
     flash_write_enable(qts);
-    flash_transaction(qts, tx, NULL, sizeof(tx));
+    flash_write_transaction(qts, tx, sizeof(tx));
     flash_wait_ready(qts);
 
     flash_read(qts, FLASH_CMD_READ, addr, 3, 0, actual, sizeof(actual));
@@ -174,14 +285,14 @@ static void test_chip_select_restarts_command(void)
 {
     K230SsiFlashImage image;
     QTestState *qts = k230_ssi_start_with_flash(&image);
-    uint8_t tx[] = { FLASH_CMD_JEDEC, 0 };
-    uint8_t first[ARRAY_SIZE(tx)];
-    uint8_t second[ARRAY_SIZE(tx)];
+    uint8_t command = FLASH_CMD_JEDEC;
+    uint8_t first;
+    uint8_t second;
 
-    flash_transaction(qts, tx, first, ARRAY_SIZE(tx));
-    flash_transaction(qts, tx, second, ARRAY_SIZE(tx));
-    g_assert_cmphex(first[1], ==, 0xef);
-    g_assert_cmphex(second[1], ==, 0xef);
+    flash_read_transaction(qts, &command, 1, &first, 1);
+    flash_read_transaction(qts, &command, 1, &second, 1);
+    g_assert_cmphex(first, ==, 0xef);
+    g_assert_cmphex(second, ==, 0xef);
 
     qtest_quit(qts);
     k230_ssi_flash_image_clear(&image);

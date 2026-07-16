@@ -85,8 +85,14 @@ void k230_ssi_flash_image_clear(K230SsiFlashImage *image)
 
 QTestState *k230_ssi_start_with_flash(K230SsiFlashImage *image)
 {
+    /*
+     * 启动带真实 QEMU SPI NOR 的 K230 machine：spi-flash 选择设备模型，
+     * if=mtd 的 drive 提供可持久化的原始 Flash 内容。测试结束后由调用者
+     * 使用 k230_ssi_flash_image_clear() 删除临时镜像。
+     */
     k230_ssi_flash_image_init(image);
-    return qtest_initf("-machine k230 -drive file=%s,format=raw,if=mtd",
+    return qtest_initf("-machine k230,spi-flash=w25q256 "
+                       "-drive file=%s,format=raw,if=mtd",
                        image->path);
 }
 
