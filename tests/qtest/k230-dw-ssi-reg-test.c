@@ -150,20 +150,57 @@ static void test_read_only_and_reserved_registers(void)
     qtest_quit(qts);
 }
 
-static void test_configuration_is_locked_while_enabled(void)
+static void test_enabled_write_contract(void)
 {
+    static const uint32_t locked[] = {
+        K230_SSI_CTRLR0,
+        K230_SSI_CTRLR1,
+        K230_SSI_MWCR,
+        K230_SSI_BAUDR,
+        K230_SSI_SPI_CTRLR0,
+    };
+    static const RegisterMask enabled_writable[] = {
+        { K230_SSI_TXFTLR, K230_SSI_TXFTLR_WRITABLE_MASK },
+        { K230_SSI_RXFTLR, K230_SSI_RXFTLR_WRITABLE_MASK },
+        /* 避免设置 IDMAE；本用例只验证 enabled 状态下寄存器可编程。 */
+        { K230_SSI_DMACR, K230_SSI_DMACR_WRITABLE_MASK & ~BIT(2) },
+        { K230_SSI_AXIAWLEN, K230_SSI_AXILEN_WRITABLE_MASK },
+        { K230_SSI_AXIARLEN, K230_SSI_AXILEN_WRITABLE_MASK },
+        { K230_SSI_RX_SAMPLE_DELAY, K230_SSI_RX_SAMPLE_WRITABLE_MASK },
+        { K230_SSI_DDR_DRIVE_EDGE, K230_SSI_DDR_EDGE_WRITABLE_MASK },
+        { K230_SSI_XIP_MODE_BITS, K230_SSI_XIP_REG_WRITABLE_MASK },
+        { K230_SSI_XIP_INCR_INST, K230_SSI_XIP_REG_WRITABLE_MASK },
+        { K230_SSI_XIP_WRAP_INST, K230_SSI_XIP_REG_WRITABLE_MASK },
+        { K230_SSI_SPIDR, K230_SSI_SPIDR_WRITABLE_MASK },
+        { K230_SSI_SPIAR, UINT32_MAX },
+        { K230_SSI_AXIAR0, UINT32_MAX },
+        { K230_SSI_AXIAR1, UINT32_MAX },
+    };
+    uint32_t locked_values[ARRAY_SIZE(locked)];
     QTestState *qts = k230_ssi_start();
 
     k230_ssi_configure(qts, K230_SPI1_BASE, K230_SSI_TMOD_TR, 8, 0);
-    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_RXFTLR, 7);
     k230_ssi_enable_cs(qts, K230_SPI1_BASE, 0);
 
-    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_CTRLR0, UINT32_MAX);
-    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_RXFTLR, UINT32_MAX);
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_CTRLR0),
-                    ==, 7);
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RXFTLR),
-                    ==, 7);
+    for (int i = 0; i < ARRAY_SIZE(locked); i++) {
+        locked_values[i] = k230_ssi_readl(qts, K230_SPI1_BASE, locked[i]);
+        k230_ssi_writel(qts, K230_SPI1_BASE, locked[i], UINT32_MAX);
+        g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, locked[i]),
+                        ==, locked_values[i]);
+    }
+
+    /*
+     * SSIENR=1 不等于事务 active。TRM 未明确锁定的寄存器由 guest
+     * 软件保证更新时序，设备模型仍接受写入并执行各自的字段掩码。
+     */
+    for (int i = 0; i < ARRAY_SIZE(enabled_writable); i++) {
+        k230_ssi_writel(qts, K230_SPI1_BASE,
+                        enabled_writable[i].offset,
+                        enabled_writable[i].mask);
+        g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE,
+                                      enabled_writable[i].offset),
+                        ==, enabled_writable[i].mask);
+    }
 
     qtest_quit(qts);
 }
@@ -224,8 +261,8 @@ void k230_ssi_register_reg_tests(void)
                    test_ser_masks_follow_sdk_num_cs);
     qtest_add_func("/k230-dw-ssi/reg/read-only-and-razwi",
                    test_read_only_and_reserved_registers);
-    qtest_add_func("/k230-dw-ssi/reg/enabled-write-lock",
-                   test_configuration_is_locked_while_enabled);
+    qtest_add_func("/k230-dw-ssi/reg/enabled-write-contract",
+                   test_enabled_write_contract);
     qtest_add_func("/k230-dw-ssi/reg/internal-dma-passive",
                    test_internal_dma_registers_are_passive);
     qtest_add_func("/k230-dw-ssi/reg/system-reset",

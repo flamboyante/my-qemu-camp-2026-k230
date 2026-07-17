@@ -594,27 +594,18 @@ static bool k230_dw_ssi_is_razwi(hwaddr addr)
 
 static bool k230_dw_ssi_write_requires_disabled(hwaddr addr)
 {
-    /* TRM 要求这些配置在 SSIENR=0 的安全边界内更新。 */
+    /*
+     * 仅锁定会直接改变基本事务格式的静态寄存器。SSIENR=1 只表示
+     * 控制器已启用，不等于 SPI、IDMA 或 XIP 事务正在进行；对于 TRM
+     * 未明确规定为 disabled-only 的 DMA、XIP 和采样时序寄存器，接受
+     * 软件写入，由 guest 驱动负责在安全的事务边界更新。
+     */
     switch (addr) {
     case A_CTRLR0:
     case A_CTRLR1:
     case A_MWCR:
     case A_BAUDR:
-    case A_TXFTLR:
-    case A_RXFTLR:
-    case A_DMACR:
-    case A_AXIAWLEN:
-    case A_AXIARLEN:
-    case A_RX_SAMPLE_DELAY:
     case A_SPI_CTRLR0:
-    case A_DDR_DRIVE_EDGE:
-    case A_XIP_MODE_BITS:
-    case A_XIP_INCR_INST:
-    case A_XIP_WRAP_INST:
-    case A_SPIDR:
-    case A_SPIAR:
-    case A_AXIAR0:
-    case A_AXIAR1:
         return true;
     default:
         return false;

@@ -24,6 +24,8 @@
 #define FLASH_CMD_JEDEC         0x9f
 #define FLASH_SR_WIP            BIT(0)
 
+#define K230_SSI_SPI_CTRLR0_INST_L_16    (3U << 8)
+
 static void flash_write_transaction(QTestState *qts,
                                     const uint8_t *command,
                                     size_t command_len)
@@ -298,6 +300,88 @@ static void test_chip_select_restarts_command(void)
     k230_ssi_flash_image_clear(&image);
 }
 
+static void test_failed_enhanced_reset_falls_back_to_read_id(void)
+{
+    K230SsiFlashImage image;
+    QTestState *qts = k230_ssi_start_with_flash(&image);
+    uint32_t ctrlr0;
+    uint32_t spi_ctrlr0;
+    uint32_t fifo;
+    uint8_t id[6];
+
+    /*
+     * U-Boot spi_hw_init() 在 SSIENR=1 时通过 TXFTLR 回读探测 FIFO 深度。
+     * TXFTLR/RXFTLR 是运行期水位阈值，不能和 CTRLR0 一样被配置锁阻止。
+     */
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
+    for (fifo = 1; fifo < K230_SSI_FIFO_DEPTH; fifo++) {
+        k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_TXFTLR, fifo);
+        if (k230_ssi_readl(qts, K230_SPI0_BASE,
+                           K230_SSI_TXFTLR) != fifo) {
+            break;
+        }
+    }
+    g_assert_cmpuint(fifo, ==, K230_SSI_FIFO_DEPTH);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_TXFTLR, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_RXFTLR, fifo - 1);
+
+    /*
+     * 模拟控制器已经接收到 U-Boot 8D-8D-8D reset-enable 的保守场景：
+     * 16-bit 0x6666 指令、Octal、DTR、TX_ONLY、无地址和数据。
+     * Patch 4 不支持增强格式，因此 TX FIFO 项应保留且不产生线路传输。
+     * 当前预构建 U-Boot 会更早在 supports_op() 返回 -ENOTSUPP；这里仍
+     * 主动覆盖“已有未发送 TX 项”的更强清理边界。
+     */
+    k230_ssi_configure(qts, K230_SPI0_BASE, K230_SSI_TMOD_TO, 8, 0);
+    ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0);
+    ctrlr0 &= ~K230_SSI_CTRLR0_SPI_FRF_MASK;
+    ctrlr0 |= K230_SSI_FRF_OCTAL << K230_SSI_CTRLR0_SPI_FRF_SHIFT;
+    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(2) |
+                 K230_SSI_SPI_CTRLR0_INST_L_16 |
+                 K230_SSI_SPI_CTRLR0_SPI_DDR_EN |
+                 K230_SSI_SPI_CTRLR0_INST_DDR_EN;
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_CTRLR0, ctrlr0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, 0x6666);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, BIT(0));
+
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_TXFLR),
+                     ==, 1);
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RXFLR),
+                     ==, 0);
+
+    /* U-Boot 失败退出先撤销 CS；下一条 exec_op 开头禁用 SSI。 */
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 0);
+    k230_ssi_disable(qts, K230_SPI0_BASE);
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_TXFLR),
+                     ==, 0);
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RXFLR),
+                     ==, 0);
+
+    /* 回退到 Standard EEPROM_READ，Read-ID 必须获得 NDF+1=6 字节。 */
+    k230_ssi_configure(qts, K230_SPI0_BASE,
+                       K230_SSI_TMOD_EEPROM_READ, 8, ARRAY_SIZE(id) - 1);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, FLASH_CMD_JEDEC);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, BIT(0));
+
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RXFLR),
+                     ==, ARRAY_SIZE(id));
+    for (size_t i = 0; i < ARRAY_SIZE(id); i++) {
+        id[i] = k230_ssi_read_frame(qts, K230_SPI0_BASE);
+    }
+    g_assert_cmphex(id[0], ==, 0xef);
+    g_assert_cmphex(id[1], ==, 0x40);
+    g_assert_cmphex(id[2], ==, 0x19);
+
+    k230_ssi_disable(qts, K230_SPI0_BASE);
+    qtest_quit(qts);
+    k230_ssi_flash_image_clear(&image);
+}
+
 static void configure_enhanced_read(QTestState *qts, uint32_t frf,
                                     uint32_t trans_type, uint32_t wait_cycles,
                                     uint8_t opcode, uint32_t address,
@@ -417,6 +501,8 @@ void k230_ssi_register_flash_tests(void)
                    test_sector_erase_and_readback);
     qtest_add_func("/k230-dw-ssi/flash/cs-restarts-command",
                    test_chip_select_restarts_command);
+    qtest_add_func("/k230-dw-ssi/flash/enhanced-reset-fallback-read-id",
+                   test_failed_enhanced_reset_falls_back_to_read_id);
     qtest_add_func("/k230-dw-ssi/qspi/quad-output-read",
                    test_quad_output_read_sequence);
     qtest_add_func("/k230-dw-ssi/qspi/mode-bits-dummy",
