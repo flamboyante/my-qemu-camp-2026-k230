@@ -20,10 +20,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(K230DwSsiState, K230_DW_SSI)
 #define K230_DW_SSI_NUM_REGS \
     (K230_DW_SSI_REGS_SIZE / sizeof(uint32_t))
 
-/*
- * Patch 3 学习脚手架只描述 Standard SPI 的软件可见阶段。
- * Enhanced SPI/QSPI 阶段在后续 Patch 中扩展，不能提前混入这里。
- */
 typedef enum K230DwSsiPhase {
     /* LEARNING(P3): 当前没有需要跨 MMIO 访问保存的传输进度。 */
     K230_DW_SSI_PHASE_IDLE,
@@ -45,7 +41,35 @@ typedef enum K230DwSsiPhase {
      * 使用 dummy 帧继续产生时钟，并接收 NDF + 1 个数据帧。
      */
     K230_DW_SSI_PHASE_EEPROM_DATA,
+
+    /*
+     * LEARNING(P5): Enhanced SPI 不是第二套 FIFO 引擎。以下阶段只描述
+     * 同一条事务在 instruction/address/mode/dummy/data 间的推进位置。
+     */
+    K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION,
+    K230_DW_SSI_PHASE_ENHANCED_ADDRESS,
+    K230_DW_SSI_PHASE_ENHANCED_MODE,
+    K230_DW_SSI_PHASE_ENHANCED_DUMMY,
+    K230_DW_SSI_PHASE_ENHANCED_DATA,
 } K230DwSsiPhase;
+
+/*
+ * LEARNING(P5): 这是“增强事务描述”，不是 Flash opcode 状态机。
+ * PIO 和后续 XIP 都应先生成同一种描述，再由统一阶段执行器发送。
+ */
+typedef struct K230DwSsiEnhancedCommand {
+    uint32_t instruction;
+    uint32_t address;
+    uint32_t mode_bits;
+    uint32_t instruction_bits;
+    uint32_t address_bits;
+    uint32_t mode_bits_bits;
+    uint32_t wait_cycles;
+    uint32_t data_frames;
+    uint32_t spi_frf;
+    uint32_t trans_type;
+    bool mode_bits_enabled;
+} K230DwSsiEnhancedCommand;
 
 
 struct K230DwSsiState {
@@ -61,6 +85,7 @@ struct K230DwSsiState {
 
     uint32_t phase;
     uint32_t remaining_frames;
+    K230DwSsiEnhancedCommand enhanced;
 
     uint32_t num_cs;
     uint32_t max_lines;

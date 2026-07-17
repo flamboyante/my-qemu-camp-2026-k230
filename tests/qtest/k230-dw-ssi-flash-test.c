@@ -1,9 +1,9 @@
 /*
- * K230 spi0、W25Q256 与增强 QSPI qtest
+ * K230 spi0 Standard SPI NOR qtest
  *
  * Flash 命令通过真实 m25p80 后端执行。
- * 测试关注控制器组织出的指令、地址、dummy 和数据阶段，
- * 不把 QEMU SSIBus 当成逐线波形模型。
+ * 本文件只验证 Patch 4 的 Standard TO/EEPROM_READ 数据路径；
+ * Patch 5 的 Dual/Quad 测试位于 k230-dw-ssi-qspi-test.c。
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -17,8 +17,6 @@
 #define FLASH_CMD_READ          0x03
 #define FLASH_CMD_READ4         0x13
 #define FLASH_CMD_FAST_READ     0x0b
-#define FLASH_CMD_QUAD_OUT      0x6b
-#define FLASH_CMD_QUAD_IO       0xeb
 #define FLASH_CMD_PP            0x02
 #define FLASH_CMD_SE            0x20
 #define FLASH_CMD_JEDEC         0x9f
@@ -382,112 +380,6 @@ static void test_failed_enhanced_reset_falls_back_to_read_id(void)
     k230_ssi_flash_image_clear(&image);
 }
 
-static void configure_enhanced_read(QTestState *qts, uint32_t frf,
-                                    uint32_t trans_type, uint32_t wait_cycles,
-                                    uint8_t opcode, uint32_t address,
-                                    size_t read_len)
-{
-    uint32_t ctrlr0;
-    uint32_t spi_ctrlr0;
-
-    k230_ssi_configure(qts, K230_SPI0_BASE, K230_SSI_TMOD_RO,
-                       8, read_len - 1);
-    ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0);
-    ctrlr0 &= ~K230_SSI_CTRLR0_SPI_FRF_MASK;
-    ctrlr0 |= frf << K230_SSI_CTRLR0_SPI_FRF_SHIFT;
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_CTRLR0, ctrlr0);
-
-    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(trans_type) |
-                 K230_SSI_SPI_CTRLR0_ADDR_L(24) |
-                 K230_SSI_SPI_CTRLR0_INST_L_8 |
-                 K230_SSI_SPI_CTRLR0_WAIT(wait_cycles);
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
-
-    /* SDK 非 IDMA 路径先使能并写指令/地址，再拉起 SER。 */
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
-    k230_ssi_write_frame(qts, K230_SPI0_BASE, opcode);
-    k230_ssi_write_frame(qts, K230_SPI0_BASE, address);
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 1);
-}
-
-static void test_quad_output_read_sequence(void)
-{
-    K230SsiFlashImage image;
-    QTestState *qts = k230_ssi_start_with_flash(&image);
-    static const uint8_t expected[] = { 0xa5, 0x5a, 0x3c, 0xc3 };
-    uint8_t actual[ARRAY_SIZE(expected)];
-
-    configure_enhanced_read(qts, K230_SSI_FRF_QUAD, 0, 8,
-                            FLASH_CMD_QUAD_OUT,
-                            K230_SSI_FLASH_PATTERN_ADDR,
-                            ARRAY_SIZE(actual));
-    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_RXFLR,
-                       UINT32_MAX, ARRAY_SIZE(actual));
-    for (int i = 0; i < ARRAY_SIZE(actual); i++) {
-        actual[i] = k230_ssi_read_frame(qts, K230_SPI0_BASE);
-    }
-    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
-
-    qtest_quit(qts);
-    k230_ssi_flash_image_clear(&image);
-}
-
-static void test_quad_io_mode_bits_and_dummy(void)
-{
-    K230SsiFlashImage image;
-    QTestState *qts = k230_ssi_start_with_flash(&image);
-    uint32_t spi_ctrlr0;
-
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_XIP_MODE_BITS, 0xa5);
-    configure_enhanced_read(qts, K230_SSI_FRF_QUAD, 1, 8,
-                            FLASH_CMD_QUAD_IO,
-                            K230_SSI_FLASH_PATTERN_ADDR, 4);
-    k230_ssi_disable(qts, K230_SPI0_BASE);
-    spi_ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE,
-                                K230_SSI_SPI_CTRLR0);
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0,
-                    spi_ctrlr0 | K230_SSI_SPI_CTRLR0_XIP_MD_EN);
-
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE,
-                                  K230_SSI_SPI_CTRLR0) &
-                    (K230_SSI_SPI_CTRLR0_XIP_MD_EN |
-                     K230_SSI_SPI_CTRLR0_WAIT(0x1f)),
-                    ==, K230_SSI_SPI_CTRLR0_XIP_MD_EN |
-                        K230_SSI_SPI_CTRLR0_WAIT(8));
-
-    qtest_quit(qts);
-    k230_ssi_flash_image_clear(&image);
-}
-
-static void test_unsupported_octal_ddr_rxds_do_not_transfer(void)
-{
-    K230SsiFlashImage image;
-    QTestState *qts = k230_ssi_start_with_flash(&image);
-    uint32_t ctrlr0;
-    uint32_t spi_ctrlr0;
-
-    k230_ssi_configure(qts, K230_SPI0_BASE, K230_SSI_TMOD_RO, 8, 3);
-    ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0) |
-             (K230_SSI_FRF_OCTAL << K230_SSI_CTRLR0_SPI_FRF_SHIFT);
-    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_INST_L_8 |
-                 K230_SSI_SPI_CTRLR0_ADDR_L(24) |
-                 K230_SSI_SPI_CTRLR0_SPI_DDR_EN |
-                 K230_SSI_SPI_CTRLR0_INST_DDR_EN |
-                 K230_SSI_SPI_CTRLR0_RXDS_EN;
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_CTRLR0, ctrlr0);
-    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
-    k230_ssi_enable_cs(qts, K230_SPI0_BASE, 1);
-    k230_ssi_write_frame(qts, K230_SPI0_BASE, FLASH_CMD_JEDEC);
-
-    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RXFLR),
-                     ==, 0);
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_SR) &
-                    K230_SSI_SR_BUSY, ==, 0);
-
-    qtest_quit(qts);
-    k230_ssi_flash_image_clear(&image);
-}
-
 void k230_ssi_register_flash_tests(void)
 {
     qtest_add_func("/k230-dw-ssi/flash/jedec-id", test_jedec_id);
@@ -503,10 +395,4 @@ void k230_ssi_register_flash_tests(void)
                    test_chip_select_restarts_command);
     qtest_add_func("/k230-dw-ssi/flash/enhanced-reset-fallback-read-id",
                    test_failed_enhanced_reset_falls_back_to_read_id);
-    qtest_add_func("/k230-dw-ssi/qspi/quad-output-read",
-                   test_quad_output_read_sequence);
-    qtest_add_func("/k230-dw-ssi/qspi/mode-bits-dummy",
-                   test_quad_io_mode_bits_and_dummy);
-    qtest_add_func("/k230-dw-ssi/qspi/unsupported-octal-ddr-rxds",
-                   test_unsupported_octal_ddr_rxds_do_not_transfer);
 }

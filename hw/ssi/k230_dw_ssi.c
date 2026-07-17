@@ -1,7 +1,7 @@
 /*
  * K230 DWC SSI compatible SPI/QSPI controller
  *
- * This model implements the K230 register, FIFO, and standard SSI paths.
+ * This model implements the K230 register, FIFO, and SSI transfer paths.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -28,6 +28,12 @@
 #define K230_DW_SSI_AXIAWLEN_RESET          0x00000700
 #define K230_DW_SSI_AXIARLEN_RESET          0x00000700
 #define K230_DW_SSI_VERSION                 0x3130332a
+
+/*
+ * LEARNING(P5): Patch 5 的临时中文脚手架可通过下面的命令统一定位：
+ *
+ *   rg -n "LEARNING\(P5|TODO\(P5" hw/ssi include/hw/ssi tests/qtest
+ */
 
 /*
  * LEARNING(P3): 这些中文注释是临时学习脚手架。
@@ -353,6 +359,7 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
      */
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
+    memset(&s->enhanced, 0, sizeof(s->enhanced));
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -396,8 +403,12 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
         return;
     }
 
-    /* LEARNING(P3): 进入 FIFO 前先按 DFS 截断，FIFO 项的单位是帧。 */
-    fifo32_push(&s->tx_fifo, tx & k230_dw_ssi_frame_masked(s));
+    /*
+     * LEARNING(P5): FIFO 必须保留 Guest 写入的完整 DR 项。Standard SPI
+     * 仍由 send_frame() 按 DFS 截断；Enhanced SPI 则可能在 DFS=8 时把
+     * 一个完整的 24/32-bit 地址放在单个 DR 项中，再按 ADDR_L 拆分。
+     */
+    fifo32_push(&s->tx_fifo, tx);
 
     /*
      * LEARNING(P3): push 只表示“数据已准备好”；pump 会再次检查
@@ -434,6 +445,63 @@ static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
     return rx & mask;
 }
 
+static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
+{
+    /*
+     * TODO(P5-1): 从 CTRLR0.SPI_FRF、SPI_CTRLR0 和 max_lines 判断当前
+     * 增强配置是否可执行。
+     *
+     * 本 Patch 只接受 Dual/Quad SDR，并要求 TRANS_TYPE 为 0、1 或 2。
+     * 必须拒绝 Octal、超过实例 max_lines、TRANS_TYPE=3、SPI_DDR_EN、
+     * INST_DDR_EN、SPI_RXDS_EN 和 SPI_RXDS_SIG_EN。拒绝时不要消费 FIFO、
+     * 不要进入 BUSY，也不要伪造 RX 数据。
+     */
+    return false;
+}
+
+static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
+{
+    /* 每次尝试构造前先清空旧描述，避免失败路径复用上次事务。 */
+    memset(&s->enhanced, 0, sizeof(s->enhanced));
+
+    /*
+     * TODO(P5-2): 根据 CTRLR0/SPI_CTRLR0/CTRLR1 和 TX FIFO 构造
+     * s->enhanced，并在成功后把 phase 置为 ENHANCED_INSTRUCTION。
+     *
+     * 关键编码：INST_L=0/4/8/16 bit；ADDR_L 以 4 bit 为单位；实际数据
+     * 帧数为 NDF+1。RO 的 TX FIFO 中，SDK PIO 路径依次写 instruction
+     * 和 address；它们是两个“逻辑字段”，不能按 DFS=8 提前截断地址。
+     * XIP_MD_BIT_EN=1 时还要从 XIP_MODE_BITS 取得 mode_bits，并把
+     * XIP_MBL=0/1/2/3 解码为 2/4/8/16 bit。
+     *
+     * FIFO 项不足时直接返回 false，且不要只 pop 一半命令。
+     */
+    return false;
+}
+
+static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
+{
+    if (s->phase == K230_DW_SSI_PHASE_IDLE) {
+        if (!k230_dw_ssi_enhanced_config_supported(s) ||
+            !k230_dw_ssi_prepare_enhanced_command(s)) {
+            return;
+        }
+    }
+
+    /*
+     * TODO(P5-3): 按以下顺序推进同一条增强事务：
+     *
+     *   instruction -> address -> mode -> dummy -> data
+     *
+     * instruction/address 要按各自位数以大端总线字节发送；没有启用
+     * mode 时跳过该阶段。QEMU m25p80 是字节级模型，dummy 的换算必须
+     * 与其“dummy cycle modeled with byte writes”契约对齐，不能硬编码
+     * 0x6b/0xeb 等 opcode。数据阶段使用 remaining_frames=NDF+1，发送
+     * dummy 并把返回值压入 RX FIFO；RX FIFO 满时保留 phase 和计数，
+     * 等 Guest 读取 DR 后由同一个 pump 恢复。完成后回到 IDLE。
+     */
+}
+
 static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
 {
     uint32_t spi_frf;
@@ -445,7 +513,7 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
 
     spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     if (spi_frf != 0) {
-        /* FIXME(P3): Patch 3 只实现 Standard SPI，增强格式由 QSPI Patch 接管。 */
+        k230_dw_ssi_run_enhanced_transfer(s);
         return;
     }
 
@@ -900,6 +968,7 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     fifo32_reset(&s->rx_fifo);
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
+    memset(&s->enhanced, 0, sizeof(s->enhanced));
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -933,6 +1002,17 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
         VMSTATE_UINT32(phase, K230DwSsiState),
         VMSTATE_UINT32(remaining_frames, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.instruction, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.address, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.mode_bits, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.instruction_bits, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.address_bits, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.mode_bits_bits, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.wait_cycles, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.data_frames, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.spi_frf, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.trans_type, K230DwSsiState),
+        VMSTATE_BOOL(enhanced.mode_bits_enabled, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },

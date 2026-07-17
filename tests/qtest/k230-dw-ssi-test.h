@@ -131,6 +131,7 @@
 #define K230_SSI_SPI_CTRLR0_XIP_MD_EN     BIT(7)
 #define K230_SSI_SPI_CTRLR0_INST_L_8      (2U << 8)
 #define K230_SSI_SPI_CTRLR0_WAIT(v)       (((v) & 0x1fU) << 11)
+#define K230_SSI_SPI_CTRLR0_XIP_MBL_8     (2U << 26)
 #define K230_SSI_SPI_CTRLR0_SPI_DDR_EN    BIT(16)
 #define K230_SSI_SPI_CTRLR0_INST_DDR_EN   BIT(17)
 #define K230_SSI_SPI_CTRLR0_RXDS_EN       BIT(18)
@@ -211,6 +212,7 @@ void k230_ssi_register_reg_tests(void);
 void k230_ssi_register_pio_tests(void);
 void k230_ssi_register_irq_tests(void);
 void k230_ssi_register_flash_tests(void);
+void k230_ssi_register_qspi_tests(void);
 void k230_ssi_register_xip_tests(void);
 
 #endif
