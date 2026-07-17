@@ -60,10 +60,10 @@ typedef enum K230DwSsiPhase {
 typedef struct K230DwSsiEnhancedCommand {
     uint32_t instruction;
     uint32_t address;
-    uint32_t mode_bits;
+    uint32_t mode;
     uint32_t instruction_bits;
     uint32_t address_bits;
-    uint32_t mode_bits_bits;
+    uint32_t mode_bits;
     uint32_t wait_cycles;
     uint32_t data_frames;
     uint32_t spi_frf;

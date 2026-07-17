@@ -456,14 +456,60 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
      * INST_DDR_EN、SPI_RXDS_EN 和 SPI_RXDS_SIG_EN。拒绝时不要消费 FIFO、
      * 不要进入 BUSY，也不要伪造 RX 数据。
      */
-    return false;
+    uint32_t ctrlr0 = s->regs[R_CTRLR0];
+    uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
+    uint32_t spi_frf;
+    uint32_t trans_type;
+    uint32_t required_lines;
+
+    spi_frf = FIELD_EX32(ctrlr0, CTRLR0, SPI_FRF);
+    trans_type = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE);
+
+    switch (spi_frf) {
+    case 1: /* Dual */
+        required_lines = 2;
+        break;
+    case 2: /* Quad */
+        required_lines = 4;
+        break;
+    default:
+        /* Standard 不会走到这里，Octal 明确不支持 */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: unsupported SPI_FRF=%u\n",
+                      DEVICE(s)->canonical_path, spi_frf);
+        return false;
+    }
+
+    if (required_lines > s->max_lines) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: SPI_FRF=%u requires %u lines, only %u available\n",
+                      DEVICE(s)->canonical_path,
+                      spi_frf, required_lines, s->max_lines);
+        return false;
+    }
+
+    if (trans_type > 2) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: unsupported TRANS_TYPE=%u\n",
+                      DEVICE(s)->canonical_path, trans_type);
+        return false;
+    }
+
+    if (FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_DDR_EN) ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_DDR_EN) ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_EN) ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_SIG_EN)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: DDR/RXDS enhanced mode is unsupported\n",
+                      DEVICE(s)->canonical_path);
+        return false;
+    }
+
+    return true;
 }
 
 static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
 {
-    /* 每次尝试构造前先清空旧描述，避免失败路径复用上次事务。 */
-    memset(&s->enhanced, 0, sizeof(s->enhanced));
-
     /*
      * TODO(P5-2): 根据 CTRLR0/SPI_CTRLR0/CTRLR1 和 TX FIFO 构造
      * s->enhanced，并在成功后把 phase 置为 ENHANCED_INSTRUCTION。
@@ -476,20 +522,96 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
      *
      * FIFO 项不足时直接返回 false，且不要只 pop 一半命令。
      */
-    return false;
+    uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
+    uint32_t inst_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, INST_L);
+    uint32_t addr_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, ADDR_L);
+    uint32_t trans_type = FIELD_EX32(s->regs[R_SPI_CTRLR0],
+                                     SPI_CTRLR0, TRANS_TYPE);
+    uint32_t inst_bits;
+    uint32_t addr_bits = addr_l << 2;
+    uint32_t mode_bits = 0;
+    uint32_t required_items;
+    bool mode_bits_enabled =
+        FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, XIP_MD_BIT_EN);
+    K230DwSsiEnhancedCommand command = { 0 };
+
+    /* INST_L 是编码值：0/1/2/3 分别代表 0/4/8/16 bit。 */
+    inst_bits = inst_l ? (1U << (inst_l + 1)) : 0;
+
+    /* 当前 descriptor 和单个 DR 项最多保存 32-bit 地址。 */
+    if (addr_bits > 32) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: unsupported enhanced address length %u bits\n",
+                      DEVICE(s)->canonical_path, addr_bits);
+        return false;
+    }
+
+    if (mode_bits_enabled) {
+        uint32_t mode_length_encoding =
+            FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, XIP_MBL);
+
+        mode_bits = 1U << (mode_length_encoding + 1);
+    }
+
+    /* instruction/address 是两个逻辑字段，各占一个 FIFO 项。 */
+    required_items = (inst_bits != 0) + (addr_bits != 0);
+
+    /*
+     * 数据不足时保持 FIFO、phase 和 descriptor 不变。
+     * 下一次 DR 写入或 SER 选择触发 pump 后会重新尝试。
+     */
+    if (fifo32_num_used(&s->tx_fifo) < required_items) {
+        return false;
+    }
+
+    command.instruction_bits = inst_bits;
+    command.address_bits = addr_bits;
+    command.mode_bits = mode_bits;
+    command.mode_bits_enabled = mode_bits_enabled;
+    command.wait_cycles =
+        FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, WAIT_CYCLES);
+    command.data_frames =
+        FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
+    command.spi_frf = spi_frf;
+    command.trans_type = trans_type;
+
+    if (inst_bits != 0) {
+        command.instruction = fifo32_pop(&s->tx_fifo) &
+            (uint32_t)MAKE_64BIT_MASK(0, inst_bits);
+    }
+    if (addr_bits != 0) {
+        command.address = fifo32_pop(&s->tx_fifo) &
+            (uint32_t)MAKE_64BIT_MASK(0, addr_bits);
+    }
+    if (mode_bits_enabled) {
+        command.mode = s->regs[R_XIP_MODE_BITS] &
+            (uint32_t)MAKE_64BIT_MASK(0, mode_bits);
+    }
+
+    s->enhanced = command;
+    s->remaining_frames = command.data_frames;
+    s->phase = K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION;
+    return true;
+}
+
+static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
+                                             uint32_t value,
+                                             uint32_t bits)
+{
+    uint32_t bytes = DIV_ROUND_UP(bits, 8);
+
+    /* SSIBus/m25p80 是字节级模型，增强线宽只保存在 command 描述中。 */
+    for (uint32_t i = 0; i < bytes; i++) {
+        uint32_t shift = (bytes - i - 1) * 8;
+
+        ssi_transfer(s->spi, (value >> shift) & 0xff);
+    }
 }
 
 static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
 {
-    if (s->phase == K230_DW_SSI_PHASE_IDLE) {
-        if (!k230_dw_ssi_enhanced_config_supported(s) ||
-            !k230_dw_ssi_prepare_enhanced_command(s)) {
-            return;
-        }
-    }
-
     /*
-     * TODO(P5-3): 按以下顺序推进同一条增强事务：
+     * LEARNING(P5-3): 按以下顺序推进同一条增强事务：
      *
      *   instruction -> address -> mode -> dummy -> data
      *
@@ -500,6 +622,61 @@ static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
      * dummy 并把返回值压入 RX FIFO；RX FIFO 满时保留 phase 和计数，
      * 等 Guest 读取 DR 后由同一个 pump 恢复。完成后回到 IDLE。
      */
+    if (s->phase == K230_DW_SSI_PHASE_IDLE) {
+        if (!k230_dw_ssi_enhanced_config_supported(s) ||
+            !k230_dw_ssi_prepare_enhanced_command(s)) {
+            return;
+        }
+    }
+
+    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION) {
+        if (s->enhanced.instruction_bits != 0) {
+            k230_dw_ssi_send_enhanced_field(
+                s, s->enhanced.instruction,
+                s->enhanced.instruction_bits);
+        }
+        s->phase = K230_DW_SSI_PHASE_ENHANCED_ADDRESS;
+    }
+
+    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_ADDRESS) {
+        if (s->enhanced.address_bits != 0) {
+            k230_dw_ssi_send_enhanced_field(
+                s, s->enhanced.address, s->enhanced.address_bits);
+        }
+        s->phase = K230_DW_SSI_PHASE_ENHANCED_MODE;
+    }
+
+    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_MODE) {
+        if (s->enhanced.mode_bits_enabled) {
+            k230_dw_ssi_send_enhanced_field(
+                s, s->enhanced.mode, s->enhanced.mode_bits);
+        }
+        s->phase = K230_DW_SSI_PHASE_ENHANCED_DUMMY;
+    }
+
+    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_DUMMY) {
+        for (uint32_t i = 0; i < s->enhanced.wait_cycles; i++) {
+            ssi_transfer(s->spi, 0);
+        }
+        s->phase = K230_DW_SSI_PHASE_ENHANCED_DATA;
+    }
+
+    if (s->phase != K230_DW_SSI_PHASE_ENHANCED_DATA) {
+        g_assert_not_reached();
+    }
+
+    while (!fifo32_is_full(&s->rx_fifo) &&
+           s->remaining_frames > 0) {
+        uint32_t rx = ssi_transfer(s->spi, 0);
+
+        fifo32_push(&s->rx_fifo,
+                    rx & k230_dw_ssi_frame_masked(s));
+        s->remaining_frames--;
+    }
+
+    if (s->remaining_frames == 0) {
+        s->phase = K230_DW_SSI_PHASE_IDLE;
+    }
 }
 
 static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
@@ -1004,10 +1181,10 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32(remaining_frames, K230DwSsiState),
         VMSTATE_UINT32(enhanced.instruction, K230DwSsiState),
         VMSTATE_UINT32(enhanced.address, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.mode, K230DwSsiState),
         VMSTATE_UINT32(enhanced.mode_bits, K230DwSsiState),
         VMSTATE_UINT32(enhanced.instruction_bits, K230DwSsiState),
         VMSTATE_UINT32(enhanced.address_bits, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.mode_bits_bits, K230DwSsiState),
         VMSTATE_UINT32(enhanced.wait_cycles, K230DwSsiState),
         VMSTATE_UINT32(enhanced.data_frames, K230DwSsiState),
         VMSTATE_UINT32(enhanced.spi_frf, K230DwSsiState),
