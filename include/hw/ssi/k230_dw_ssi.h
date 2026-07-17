@@ -68,6 +68,7 @@ typedef struct K230DwSsiEnhancedCommand {
     uint32_t data_frames;
     uint32_t spi_frf;
     uint32_t trans_type;
+    uint32_t tmod;
     bool mode_bits_enabled;
 } K230DwSsiEnhancedCommand;
 

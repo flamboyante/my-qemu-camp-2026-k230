@@ -29,6 +29,13 @@
 #define K230_DW_SSI_AXIARLEN_RESET          0x00000700
 #define K230_DW_SSI_VERSION                 0x3130332a
 
+enum {
+    K230_DW_SSI_TMOD_TR,
+    K230_DW_SSI_TMOD_TO,
+    K230_DW_SSI_TMOD_RO,
+    K230_DW_SSI_TMOD_EEPROM_READ,
+};
+
 /*
  * LEARNING(P5): Patch 5 的临时中文脚手架可通过下面的命令统一定位：
  *
@@ -448,10 +455,11 @@ static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
 static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
 {
     /*
-     * TODO(P5-1): 从 CTRLR0.SPI_FRF、SPI_CTRLR0 和 max_lines 判断当前
-     * 增强配置是否可执行。
+     * LEARNING(P5-1): 从 CTRLR0.SPI_FRF、TMOD、SPI_CTRLR0 和
+     * max_lines 判断当前增强配置是否可执行。
      *
-     * 本 Patch 只接受 Dual/Quad SDR，并要求 TRANS_TYPE 为 0、1 或 2。
+     * 本 Patch 只接受 Dual/Quad SDR 的 RO/TO，并要求 TRANS_TYPE 为
+     * 0、1 或 2。
      * 必须拒绝 Octal、超过实例 max_lines、TRANS_TYPE=3、SPI_DDR_EN、
      * INST_DDR_EN、SPI_RXDS_EN 和 SPI_RXDS_SIG_EN。拒绝时不要消费 FIFO、
      * 不要进入 BUSY，也不要伪造 RX 数据。
@@ -460,10 +468,12 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
     uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
     uint32_t spi_frf;
     uint32_t trans_type;
+    uint32_t tmod;
     uint32_t required_lines;
 
     spi_frf = FIELD_EX32(ctrlr0, CTRLR0, SPI_FRF);
     trans_type = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE);
+    tmod = FIELD_EX32(ctrlr0, CTRLR0, TMOD);
 
     switch (spi_frf) {
     case 1: /* Dual */
@@ -495,6 +505,13 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
         return false;
     }
 
+    if (tmod != K230_DW_SSI_TMOD_RO && tmod != K230_DW_SSI_TMOD_TO) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: unsupported enhanced TMOD=%u\n",
+                      DEVICE(s)->canonical_path, tmod);
+        return false;
+    }
+
     if (FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_DDR_EN) ||
         FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_DDR_EN) ||
         FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_EN) ||
@@ -511,7 +528,7 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
 static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
 {
     /*
-     * TODO(P5-2): 根据 CTRLR0/SPI_CTRLR0/CTRLR1 和 TX FIFO 构造
+     * LEARNING(P5-2): 根据 CTRLR0/SPI_CTRLR0/CTRLR1 和 TX FIFO 构造
      * s->enhanced，并在成功后把 phase 置为 ENHANCED_INSTRUCTION。
      *
      * 关键编码：INST_L=0/4/8/16 bit；ADDR_L 以 4 bit 为单位；实际数据
@@ -574,6 +591,7 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
         FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
     command.spi_frf = spi_frf;
     command.trans_type = trans_type;
+    command.tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
 
     if (inst_bits != 0) {
         command.instruction = fifo32_pop(&s->tx_fifo) &
@@ -608,6 +626,31 @@ static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
     }
 }
 
+static void k230_dw_ssi_run_enhanced_rx_data(K230DwSsiState *s)
+{
+    while (!fifo32_is_full(&s->rx_fifo) &&
+           s->remaining_frames > 0) {
+        uint32_t rx = ssi_transfer(s->spi, 0);
+
+        fifo32_push(&s->rx_fifo,
+                    rx & k230_dw_ssi_frame_masked(s));
+        s->remaining_frames--;
+    }
+}
+
+static void k230_dw_ssi_run_enhanced_tx_data(K230DwSsiState *s)
+{
+    uint32_t mask = k230_dw_ssi_frame_masked(s);
+
+    while (!fifo32_is_empty(&s->tx_fifo) &&
+           s->remaining_frames > 0) {
+        uint32_t tx = fifo32_pop(&s->tx_fifo);
+
+        ssi_transfer(s->spi, tx & mask);
+        s->remaining_frames--;
+    }
+}
+
 static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
 {
     /*
@@ -619,8 +662,10 @@ static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
      * mode 时跳过该阶段。QEMU m25p80 是字节级模型，dummy 的换算必须
      * 与其“dummy cycle modeled with byte writes”契约对齐，不能硬编码
      * 0x6b/0xeb 等 opcode。数据阶段使用 remaining_frames=NDF+1，发送
-     * dummy 并把返回值压入 RX FIFO；RX FIFO 满时保留 phase 和计数，
-     * 等 Guest 读取 DR 后由同一个 pump 恢复。完成后回到 IDLE。
+     * RO 数据阶段在 RX FIFO 满时暂停。
+     * TO 数据阶段在 TX FIFO 空时暂停。
+     * 两者都保留 phase/remaining_frames。
+     * 后续 DR 访问负责恢复；只有计数归零才回到 IDLE。
      */
     if (s->phase == K230_DW_SSI_PHASE_IDLE) {
         if (!k230_dw_ssi_enhanced_config_supported(s) ||
@@ -665,13 +710,15 @@ static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
         g_assert_not_reached();
     }
 
-    while (!fifo32_is_full(&s->rx_fifo) &&
-           s->remaining_frames > 0) {
-        uint32_t rx = ssi_transfer(s->spi, 0);
-
-        fifo32_push(&s->rx_fifo,
-                    rx & k230_dw_ssi_frame_masked(s));
-        s->remaining_frames--;
+    switch (s->enhanced.tmod) {
+    case K230_DW_SSI_TMOD_RO:
+        k230_dw_ssi_run_enhanced_rx_data(s);
+        break;
+    case K230_DW_SSI_TMOD_TO:
+        k230_dw_ssi_run_enhanced_tx_data(s);
+        break;
+    default:
+        g_assert_not_reached();
     }
 
     if (s->remaining_frames == 0) {
@@ -697,7 +744,7 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
     tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
 
     switch (tmod) {
-    case 0: /* TX_AND_RX */
+    case K230_DW_SSI_TMOD_TR: /* TX_AND_RX */
         /*
          * LEARNING(P3-3): 消费 TX FIFO，并把每帧返回值压入 RX FIFO。
          *
@@ -715,7 +762,7 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             }
         }
         break;
-    case 1: /* TX_ONLY */
+    case K230_DW_SSI_TMOD_TO: /* TX_ONLY */
         /*
          * LEARNING(P3-4): 消费 TX FIFO，但丢弃线路返回值。
          *
@@ -727,7 +774,7 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             k230_dw_ssi_send_frame(s, tx);
         }
         break;
-    case 2: /* RX_ONLY */
+    case K230_DW_SSI_TMOD_RO: /* RX_ONLY */
         /*
          * LEARNING(P3-5): 一个 dummy DR 启动 NDF + 1 个接收帧。
          *
@@ -761,7 +808,7 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
                 break;
         }
         break;
-    case 3: /* EEPROM_READ */
+    case K230_DW_SSI_TMOD_EEPROM_READ: /* EEPROM_READ */
         /*
          * LEARNING(P3-6): 先发送命令阶段，再自动接收 NDF + 1 帧。
          *
@@ -1189,6 +1236,7 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32(enhanced.data_frames, K230DwSsiState),
         VMSTATE_UINT32(enhanced.spi_frf, K230DwSsiState),
         VMSTATE_UINT32(enhanced.trans_type, K230DwSsiState),
+        VMSTATE_UINT32(enhanced.tmod, K230DwSsiState),
         VMSTATE_BOOL(enhanced.mode_bits_enabled, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()

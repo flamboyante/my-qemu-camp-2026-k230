@@ -135,6 +135,7 @@
 #define K230_SSI_SPI_CTRLR0_SPI_DDR_EN    BIT(16)
 #define K230_SSI_SPI_CTRLR0_INST_DDR_EN   BIT(17)
 #define K230_SSI_SPI_CTRLR0_RXDS_EN       BIT(18)
+#define K230_SSI_SPI_CTRLR0_RXDS_SIG_EN   BIT(25)
 
 #define K230_SSI_SR_BUSY                BIT(0)
 #define K230_SSI_SR_TFNF                BIT(1)
