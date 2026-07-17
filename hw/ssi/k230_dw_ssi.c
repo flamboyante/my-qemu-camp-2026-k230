@@ -29,6 +29,8 @@
 #define K230_DW_SSI_AXIARLEN_RESET          0x00000700
 #define K230_DW_SSI_VERSION                 0x3130332a
 
+#define K230_DW_SSI_IRQ_VALID_MASK          0x000009bf
+
 enum {
     K230_DW_SSI_TMOD_TR,
     K230_DW_SSI_TMOD_TO,
@@ -269,6 +271,23 @@ REG32(XIP_WRITE_CTRL, 0x148)
 #define K230_DW_SSI_AXIAR1_WRITABLE_MASK R_AXIAR1_AXIAR_32_63_MASK
 
 /*
+ * LEARNING(P6): 外部 GPIO 顺序和 RISR 位号不同，必须显式映射。
+ * Patch 7 只负责把这九个 output index 接到 PLIC，不修改本表。
+ */
+static const uint32_t k230_dw_ssi_irq_status_mask[
+    K230_DW_SSI_IRQ_COUNT] = {
+    [K230_DW_SSI_IRQ_TXE] = R_RISR_TXEIR_MASK,
+    [K230_DW_SSI_IRQ_TXO] = R_RISR_TXOIR_MASK,
+    [K230_DW_SSI_IRQ_RXF] = R_RISR_RXFIR_MASK,
+    [K230_DW_SSI_IRQ_RXO] = R_RISR_RXOIR_MASK,
+    [K230_DW_SSI_IRQ_TXU] = R_RISR_TXUIR_MASK,
+    [K230_DW_SSI_IRQ_RXU] = R_RISR_RXUIR_MASK,
+    [K230_DW_SSI_IRQ_MST] = R_RISR_MSTIR_MASK,
+    [K230_DW_SSI_IRQ_DONE] = R_RISR_DONER_MASK,
+    [K230_DW_SSI_IRQ_AXIE] = R_RISR_AXIER_MASK,
+};
+
+/*
  * 普通保存寄存器直接从 regs[] 读回，所以复位值和所有 Guest 写入路径
  * 都必须通过各自的 writable mask，保证保留位不会进入寄存器状态。
  */
@@ -276,6 +295,42 @@ static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
                                      uint32_t value, uint32_t mask)
 {
     s->regs[reg] = (s->regs[reg] & ~mask) | (value & mask);
+}
+
+static uint32_t k230_dw_ssi_irq_raw_status(K230DwSsiState *s)
+{
+    uint32_t status = s->irq_latched;
+
+    /*
+     * TODO(P6-1): 根据 TXFLR <= TXFTLR.TFT 动态加入 TXE，根据
+     * RXFLR > RXFTLR.RFT 动态加入 RXF。不要把水位状态写回 regs[]，
+     * 也不要用 SSIENR 屏蔽 RISR。
+     */
+    return status & K230_DW_SSI_IRQ_VALID_MASK;
+}
+
+static void k230_dw_ssi_update_irq(K230DwSsiState *s)
+{
+    uint32_t status = k230_dw_ssi_irq_raw_status(s) &
+                      s->regs[R_IMR] & K230_DW_SSI_IRQ_VALID_MASK;
+
+    for (int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
+        qemu_set_irq(s->irqs[i], !!(status & k230_dw_ssi_irq_status_mask[i]));
+    }
+}
+
+static uint32_t k230_dw_ssi_irq_read_clear(K230DwSsiState *s,
+                                            uint32_t clear_mask)
+{
+    uint32_t active = s->irq_latched & clear_mask;
+
+    /*
+     * LEARNING(P6): RC 寄存器先返回旧状态，再清对应锁存并更新输出。
+     * 动态 TXE/RXF 不在 irq_latched 中，因此不能被此 helper 清除。
+     */
+    s->irq_latched &= ~clear_mask;
+    k230_dw_ssi_update_irq(s);
+    return !!active;
 }
 
 static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
@@ -367,6 +422,9 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
+
+    /* TODO(P6-3): disable 后由清空的 FIFO 水位重新驱动动态 IRQ。 */
+    k230_dw_ssi_update_irq(s);
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -404,8 +462,9 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 
     if (fifo32_is_full(&s->tx_fifo)) {
         /*
-         * LEARNING(P3): Patch 3 只保证 FIFO 不越界。TXO 错误锁存属于
-         * IRQ Patch，因此这里暂时直接忽略超出容量的写入。
+         * TODO(P6-2): 忽略超出容量的写入前锁存 TXO，并更新 IRQ。
+         * TXO 测试必须在 SSIENR=1、SER=0 时填满 FIFO，避免同步 pump
+         * 把每个新 frame 立即发走。
          */
         return;
     }
@@ -422,6 +481,9 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
      * SSIENR、CS 和传输格式，决定现在发送还是继续留在 FIFO 中。
      */
     k230_dw_ssi_run_transfer(s);
+
+    /* TODO(P6-3): TX/RX FIFO 可能在同步 pump 中变化，统一重算 IRQ。 */
+    k230_dw_ssi_update_irq(s);
 }
 
 /*
@@ -759,6 +821,8 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             uint32_t rx = k230_dw_ssi_send_frame(s, tx);
             if(!fifo32_is_full(&s->rx_fifo)) {
                 fifo32_push(&s->rx_fifo, rx);
+            } else {
+                /* TODO(P6-2): 新 frame 无处保存时锁存 RXO。 */
             }
         }
         break;
@@ -913,6 +977,8 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         if (!fifo32_is_empty(&s->rx_fifo)) {
             /* LEARNING(P3): DR0..DR35 都是同一个 RX FIFO 的别名。 */
             value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
+        } else {
+            /* TODO(P6-2): 空 RX FIFO 读取返回 0，并锁存 RXU。 */
         }
 
         /*
@@ -920,6 +986,7 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
          * phase、remaining_frames 与 RX FIFO 是否仍然满。
          */
         k230_dw_ssi_run_transfer(s);
+        k230_dw_ssi_update_irq(s);
         return value;
     }
 
@@ -967,15 +1034,29 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         value = k230_dw_ssi_status(s);
         break;
     case A_ISR:
+        value = k230_dw_ssi_irq_raw_status(s) & s->regs[R_IMR] &
+                K230_DW_SSI_IRQ_VALID_MASK;
+        break;
     case A_RISR:
-        value = 0;
+        value = k230_dw_ssi_irq_raw_status(s);
         break;
     case A_TXEICR:
+        value = k230_dw_ssi_irq_read_clear(
+            s, R_RISR_TXOIR_MASK | R_RISR_TXUIR_MASK);
+        break;
     case A_RXOICR:
+        value = k230_dw_ssi_irq_read_clear(s, R_RISR_RXOIR_MASK);
+        break;
     case A_RXUICR:
+        value = k230_dw_ssi_irq_read_clear(s, R_RISR_RXUIR_MASK);
+        break;
     case A_MSTICR:
+        value = k230_dw_ssi_irq_read_clear(s, R_RISR_MSTIR_MASK);
+        break;
     case A_ICR:
-        value = 0;
+        value = k230_dw_ssi_irq_read_clear(
+            s, R_RISR_TXOIR_MASK | R_RISR_RXUIR_MASK |
+               R_RISR_RXOIR_MASK | R_RISR_MSTIR_MASK);
         break;
     case A_AXIECR:
     case A_DONECR:
@@ -1046,6 +1127,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
          * 的 TX FIFO 首次具备发送条件，因此需要主动运行 pump。
          */
         k230_dw_ssi_run_transfer(s);
+        k230_dw_ssi_update_irq(s);
         break;
     }
     case A_MWCR:
@@ -1057,6 +1139,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
         k230_dw_ssi_update_cs(s);
         k230_dw_ssi_run_transfer(s);
+        k230_dw_ssi_update_irq(s);
         break;
     case A_BAUDR:
         k230_dw_ssi_write_masked(s, R_BAUDR, value,
@@ -1065,10 +1148,12 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case A_TXFTLR:
         k230_dw_ssi_write_masked(s, R_TXFTLR, value,
                                  K230_DW_SSI_TXFTLR_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
         break;
     case A_RXFTLR:
         k230_dw_ssi_write_masked(s, R_RXFTLR, value,
                                  K230_DW_SSI_RXFTLR_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
         break;
     case A_TXFLR:
     case A_RXFLR:
@@ -1077,6 +1162,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case A_IMR:
         k230_dw_ssi_write_masked(s, R_IMR, value,
                                  K230_DW_SSI_IMR_WRITABLE_MASK);
+        k230_dw_ssi_update_irq(s);
         break;
     case A_ISR:
     case A_RISR:
@@ -1193,6 +1279,7 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
+    s->irq_latched = 0;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -1204,6 +1291,9 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     s->regs[R_SPI_CTRLR0] = s->max_lines == 8 ?
         K230_DW_SSI_SPI_CTRLR0_FMC_RESET :
         K230_DW_SSI_SPI_CTRLR0_SPI_RESET;
+
+    /* TODO(P6-3): reset 值和空 FIFO 建立后重算九路输出。 */
+    k230_dw_ssi_update_irq(s);
 }
 
 static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
@@ -1224,6 +1314,7 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
         VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
         VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
+        VMSTATE_UINT32(irq_latched, K230DwSsiState),
         VMSTATE_UINT32(phase, K230DwSsiState),
         VMSTATE_UINT32(remaining_frames, K230DwSsiState),
         VMSTATE_UINT32(enhanced.instruction, K230DwSsiState),
@@ -1254,6 +1345,10 @@ static void k230_dw_ssi_init(Object *obj)
     memory_region_init_io(&s->mmio, obj, &k230_dw_ssi_ops, s,
                           TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->mmio);
+
+    for (int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
+        sysbus_init_irq(sbd, &s->irqs[i]);
+    }
 
     fifo32_create(&s->tx_fifo, K230_DW_SSI_FIFO_CAPACITY);
     fifo32_create(&s->rx_fifo, K230_DW_SSI_FIFO_CAPACITY);

@@ -406,6 +406,7 @@ qtests = {
     'k230-dw-ssi-reg-test.c',
     'k230-dw-ssi-pio-test.c',
     'k230-dw-ssi-irq-test.c',
+    'k230-dw-ssi-plic-test.c',
     'k230-dw-ssi-flash-test.c',
     'k230-dw-ssi-qspi-test.c',
     'k230-dw-ssi-xip-test.c',

@@ -1,8 +1,8 @@
 /*
- * K230 DWC SSI 内部中断与 PLIC 路由 qtest
+ * K230 DWC SSI 控制器内部中断 qtest
  *
  * 外部九路顺序固定为 TXE/TXO/RXF/RXO/TXU/RXU/MST/DONE/AXIE；
- * RISR 位号与外部 GPIO 顺序并不相同，测试中必须显式映射。
+ * 本文件只验证 RISR/ISR/IMR、水位、锁存和 RC，不读取 PLIC。
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -14,10 +14,13 @@
 static void test_watermark_and_mask_relationship(void)
 {
     QTestState *qts = k230_ssi_start();
+    uint32_t ctrlr0;
 
-    k230_ssi_disable(qts, K230_SPI1_BASE);
+    /* TXE：空 FIFO active，超过 TFT 后撤销，pump 排空后恢复。 */
+    k230_ssi_configure(qts, K230_SPI1_BASE, K230_SSI_TMOD_TR, 8, 0);
     k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_TXFTLR, 0);
     k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_IMR, 0);
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_SSIENR, 1);
 
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
                     K230_SSI_INT_TXE, ==, K230_SSI_INT_TXE);
@@ -28,6 +31,32 @@ static void test_watermark_and_mask_relationship(void)
                     K230_SSI_INT_TXE);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_ISR) &
                     K230_SSI_INT_TXE, ==, K230_SSI_INT_TXE);
+
+    k230_ssi_write_frame(qts, K230_SPI1_BASE, 0x5a);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
+                    K230_SSI_INT_TXE, ==, 0);
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_SER, BIT(0));
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
+                    K230_SSI_INT_TXE, ==, K230_SSI_INT_TXE);
+
+    /* RXF：RFT=0 时第一个接收 frame 拉高，读空后自动撤销。 */
+    k230_ssi_disable(qts, K230_SPI1_BASE);
+    ctrlr0 = k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_CTRLR0);
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_CTRLR0,
+                    ctrlr0 | K230_SSI_CTRLR0_SRL);
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_RXFTLR, 0);
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_IMR,
+                    K230_SSI_INT_RXF);
+    k230_ssi_enable_cs(qts, K230_SPI1_BASE, BIT(0));
+    k230_ssi_write_frame(qts, K230_SPI1_BASE, 0xa5);
+
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
+                    K230_SSI_INT_RXF, ==, K230_SSI_INT_RXF);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_ISR) &
+                    K230_SSI_INT_RXF, ==, K230_SSI_INT_RXF);
+    g_assert_cmphex(k230_ssi_read_frame(qts, K230_SPI1_BASE), ==, 0xa5);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
+                    K230_SSI_INT_RXF, ==, 0);
 
     qtest_quit(qts);
 }
@@ -57,7 +86,8 @@ static void test_tx_overflow_latches_and_txeicr_clears(void)
     QTestState *qts = k230_ssi_start();
 
     k230_ssi_configure(qts, K230_SPI1_BASE, K230_SSI_TMOD_TR, 32, 0);
-    k230_ssi_enable_cs(qts, K230_SPI1_BASE, 0);
+    /* SER=0 保持 deferred 状态，避免同步 pump 消费 TX FIFO。 */
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_SSIENR, 1);
     for (int i = 0; i <= K230_SSI_FIFO_DEPTH; i++) {
         k230_ssi_write_frame(qts, K230_SPI1_BASE, i);
     }
@@ -111,6 +141,8 @@ static void test_icr_clear_scope(void)
                     ==, 1);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
                     K230_SSI_INT_RXU, ==, 0);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_RISR) &
+                    K230_SSI_INT_TXE, ==, K230_SSI_INT_TXE);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_DONECR),
                     ==, 0);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_AXIECR),
@@ -135,126 +167,6 @@ static void test_mst_txu_done_axie_inactive_without_causes(void)
     qtest_quit(qts);
 }
 
-static void test_plic_txe_reset_routing(void)
-{
-    QTestState *qts = k230_ssi_start();
-
-    /*
-     * IMR 复位为 0x3f，空 TX FIFO 满足 TXE 水位，
-     * 三路 TXE 应到达各自起始号。
-     */
-    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
-        const K230SsiInstance *inst = &k230_ssi_instances[i];
-
-        g_assert_true(k230_ssi_plic_pending(qts,
-                                           inst->first_irq +
-                                           K230_SSI_IRQ_TXE));
-        g_assert_false(k230_ssi_plic_pending(qts,
-                                            inst->first_irq +
-                                            K230_SSI_IRQ_DONE));
-        g_assert_false(k230_ssi_plic_pending(qts,
-                                            inst->first_irq +
-                                            K230_SSI_IRQ_AXIE));
-    }
-
-    qtest_quit(qts);
-}
-
-static void test_plic_rxu_routing_and_instance_isolation(void)
-{
-    for (int target = 0; target < ARRAY_SIZE(k230_ssi_instances); target++) {
-        QTestState *qts = k230_ssi_start();
-        const K230SsiInstance *inst = &k230_ssi_instances[target];
-
-        for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
-            k230_ssi_writel(qts, k230_ssi_instances[i].base,
-                            K230_SSI_IMR, 0);
-        }
-        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_RXU);
-        (void)k230_ssi_read_frame(qts, inst->base);
-
-        g_assert_true(k230_ssi_plic_pending(qts,
-                                           inst->first_irq +
-                                           K230_SSI_IRQ_RXU));
-        for (int other = 0; other < ARRAY_SIZE(k230_ssi_instances); other++) {
-            if (other == target) {
-                continue;
-            }
-            g_assert_false(k230_ssi_plic_pending(
-                qts, k230_ssi_instances[other].first_irq + K230_SSI_IRQ_RXU));
-        }
-
-        qtest_quit(qts);
-    }
-}
-
-static void test_plic_rxf_routing(void)
-{
-    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
-        const K230SsiInstance *inst = &k230_ssi_instances[i];
-        QTestState *qts = k230_ssi_start();
-        uint32_t ctrlr0;
-
-        k230_ssi_configure(qts, inst->base, K230_SSI_TMOD_TR, 8, 0);
-        ctrlr0 = k230_ssi_readl(qts, inst->base, K230_SSI_CTRLR0);
-        k230_ssi_writel(qts, inst->base, K230_SSI_CTRLR0,
-                        ctrlr0 | K230_SSI_CTRLR0_SRL);
-        k230_ssi_writel(qts, inst->base, K230_SSI_RXFTLR, 0);
-        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_RXF);
-        k230_ssi_enable_cs(qts, inst->base, 1);
-        k230_ssi_write_frame(qts, inst->base, 0x5a);
-
-        g_assert_true(k230_ssi_plic_pending(qts,
-                                           inst->first_irq +
-                                           K230_SSI_IRQ_RXF));
-        qtest_quit(qts);
-    }
-}
-
-static void test_plic_txo_routing(void)
-{
-    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
-        const K230SsiInstance *inst = &k230_ssi_instances[i];
-        QTestState *qts = k230_ssi_start();
-
-        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_TXO);
-        k230_ssi_configure(qts, inst->base, K230_SSI_TMOD_TR, 32, 0);
-        k230_ssi_enable_cs(qts, inst->base, 0);
-        for (int frame = 0; frame <= K230_SSI_FIFO_DEPTH; frame++) {
-            k230_ssi_write_frame(qts, inst->base, frame);
-        }
-
-        g_assert_true(k230_ssi_plic_pending(qts,
-                                           inst->first_irq +
-                                           K230_SSI_IRQ_TXO));
-        qtest_quit(qts);
-    }
-}
-
-static void test_plic_rxo_routing(void)
-{
-    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
-        const K230SsiInstance *inst = &k230_ssi_instances[i];
-        QTestState *qts = k230_ssi_start();
-        uint32_t ctrlr0;
-
-        k230_ssi_configure(qts, inst->base, K230_SSI_TMOD_TR, 8, 0);
-        ctrlr0 = k230_ssi_readl(qts, inst->base, K230_SSI_CTRLR0);
-        k230_ssi_writel(qts, inst->base, K230_SSI_CTRLR0,
-                        ctrlr0 | K230_SSI_CTRLR0_SRL);
-        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_RXO);
-        k230_ssi_enable_cs(qts, inst->base, 1);
-        for (int frame = 0; frame <= K230_SSI_FIFO_DEPTH; frame++) {
-            k230_ssi_write_frame(qts, inst->base, frame);
-        }
-
-        g_assert_true(k230_ssi_plic_pending(qts,
-                                           inst->first_irq +
-                                           K230_SSI_IRQ_RXO));
-        qtest_quit(qts);
-    }
-}
-
 void k230_ssi_register_irq_tests(void)
 {
     qtest_add_func("/k230-dw-ssi/irq/watermark-mask",
@@ -269,14 +181,4 @@ void k230_ssi_register_irq_tests(void)
                    test_icr_clear_scope);
     qtest_add_func("/k230-dw-ssi/irq/inactive-causes",
                    test_mst_txu_done_axie_inactive_without_causes);
-    qtest_add_func("/k230-dw-ssi/irq/plic-txe-reset-routing",
-                   test_plic_txe_reset_routing);
-    qtest_add_func("/k230-dw-ssi/irq/plic-rxu-isolation",
-                   test_plic_rxu_routing_and_instance_isolation);
-    qtest_add_func("/k230-dw-ssi/irq/plic-rxf-routing",
-                   test_plic_rxf_routing);
-    qtest_add_func("/k230-dw-ssi/irq/plic-txo-routing",
-                   test_plic_txo_routing);
-    qtest_add_func("/k230-dw-ssi/irq/plic-rxo-routing",
-                   test_plic_rxo_routing);
 }

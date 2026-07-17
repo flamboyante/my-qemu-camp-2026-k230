@@ -20,6 +20,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(K230DwSsiState, K230_DW_SSI)
 #define K230_DW_SSI_NUM_REGS \
     (K230_DW_SSI_REGS_SIZE / sizeof(uint32_t))
 
+/*
+ * LEARNING(P6): 外部 IRQ 顺序来自 K230 SSI 集成接口，不等同于
+ * RISR/ISR 的位号。PLIC source ID 属于 machine 接线，不应出现在这里。
+ */
+typedef enum K230DwSsiIrq {
+    K230_DW_SSI_IRQ_TXE,
+    K230_DW_SSI_IRQ_TXO,
+    K230_DW_SSI_IRQ_RXF,
+    K230_DW_SSI_IRQ_RXO,
+    K230_DW_SSI_IRQ_TXU,
+    K230_DW_SSI_IRQ_RXU,
+    K230_DW_SSI_IRQ_MST,
+    K230_DW_SSI_IRQ_DONE,
+    K230_DW_SSI_IRQ_AXIE,
+    K230_DW_SSI_IRQ_COUNT,
+} K230DwSsiIrq;
+
 typedef enum K230DwSsiPhase {
     /* LEARNING(P3): 当前没有需要跨 MMIO 访问保存的传输进度。 */
     K230_DW_SSI_PHASE_IDLE,
@@ -79,10 +96,14 @@ struct K230DwSsiState {
     MemoryRegion mmio;
     SSIBus *spi;
     qemu_irq *cs_lines;
+    qemu_irq irqs[K230_DW_SSI_IRQ_COUNT];
 
     Fifo32 tx_fifo;
     Fifo32 rx_fifo;
     uint32_t regs[K230_DW_SSI_NUM_REGS];
+
+    /* LEARNING(P6): 只保存错误锁存；TXE/RXF 必须从 FIFO 水位动态计算。 */
+    uint32_t irq_latched;
 
     uint32_t phase;
     uint32_t remaining_frames;
