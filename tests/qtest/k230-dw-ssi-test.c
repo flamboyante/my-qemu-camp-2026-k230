@@ -17,7 +17,7 @@ int main(int argc, char **argv)
     k230_ssi_register_flash_tests();
     k230_ssi_register_qspi_tests();
     k230_ssi_register_irq_tests();
-    /* LEARNING(P6): Patch 7 完成 PLIC 接线后再注册 PLIC routing 用例。 */
+    k230_ssi_register_plic_tests();
     k230_ssi_register_xip_tests();
 
     return g_test_run();

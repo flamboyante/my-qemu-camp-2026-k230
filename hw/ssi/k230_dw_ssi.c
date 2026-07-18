@@ -1330,6 +1330,14 @@ static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
     }
 }
 
+static void k230_dw_ssi_exit_reset(Object *obj, ResetType type)
+{
+    K230DwSsiState *s = K230_DW_SSI(obj);
+
+    /* Reset release 后，重新把当前 IRQ 状态驱动到外部连接。 */
+    k230_dw_ssi_update_irq(s);
+}
+
 static int k230_dw_ssi_post_load(void *opaque, int version_id)
 {
     K230DwSsiState *s = opaque;
@@ -1431,6 +1439,7 @@ static void k230_dw_ssi_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, k230_dw_ssi_properties);
     rc->phases.enter = k230_dw_ssi_enter_reset;
     rc->phases.hold = k230_dw_ssi_hold_reset;
+    rc->phases.exit = k230_dw_ssi_exit_reset;
 }
 
 static const TypeInfo k230_dw_ssi_info = {

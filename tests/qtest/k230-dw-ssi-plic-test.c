@@ -1,7 +1,8 @@
 /*
  * K230 DWC SSI PLIC 路由 qtest
  *
- * 本文件属于 Patch 7。Patch 6 阶段只编译脚手架，不在总入口注册这些用例。
+ * Patch 7 RED 脚手架：路由表已固定，完成 27 路接线后这些
+ * 用例转为 GREEN。
  * 外部九路顺序固定为 TXE/TXO/RXF/RXO/TXU/RXU/MST/DONE/AXIE。
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
