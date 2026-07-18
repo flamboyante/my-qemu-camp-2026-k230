@@ -893,6 +893,131 @@ static void test_mst_txu_done_axie_inactive_without_causes(void)
     qtest_quit(qts);
 }
 
+
+static bool k230_ssi_plic_pending(QTestState *qts, uint32_t irq)
+{
+    uint64_t addr = K230_PLIC_BASE + K230_PLIC_PENDING_BASE +
+                    (irq / 32) * sizeof(uint32_t);
+
+    return qtest_readl(qts, addr) & BIT(irq % 32);
+}
+static void test_plic_txe_reset_routing(void)
+{
+    QTestState *qts = k230_ssi_start();
+
+    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
+        const K230SsiInstance *inst = &k230_ssi_instances[i];
+
+        g_assert_true(k230_ssi_plic_pending(qts,
+                                           inst->first_irq +
+                                           K230_SSI_IRQ_TXE));
+        g_assert_false(k230_ssi_plic_pending(qts,
+                                            inst->first_irq +
+                                            K230_SSI_IRQ_DONE));
+        g_assert_false(k230_ssi_plic_pending(qts,
+                                            inst->first_irq +
+                                            K230_SSI_IRQ_AXIE));
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_plic_rxu_routing_and_instance_isolation(void)
+{
+    for (int target = 0; target < ARRAY_SIZE(k230_ssi_instances); target++) {
+        QTestState *qts = k230_ssi_start();
+        const K230SsiInstance *inst = &k230_ssi_instances[target];
+
+        for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
+            k230_ssi_writel(qts, k230_ssi_instances[i].base,
+                            K230_SSI_IMR, 0);
+        }
+        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_RXU);
+        (void)k230_ssi_read_frame(qts, inst->base);
+
+        g_assert_true(k230_ssi_plic_pending(qts,
+                                           inst->first_irq +
+                                           K230_SSI_IRQ_RXU));
+        for (int other = 0; other < ARRAY_SIZE(k230_ssi_instances); other++) {
+            if (other == target) {
+                continue;
+            }
+            g_assert_false(k230_ssi_plic_pending(
+                qts, k230_ssi_instances[other].first_irq +
+                     K230_SSI_IRQ_RXU));
+        }
+
+        qtest_quit(qts);
+    }
+}
+
+static void test_plic_rxf_routing(void)
+{
+    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
+        const K230SsiInstance *inst = &k230_ssi_instances[i];
+        QTestState *qts = k230_ssi_start();
+        uint32_t ctrlr0;
+
+        k230_ssi_configure(qts, inst->base, K230_SSI_TMOD_TR, 8, 0);
+        ctrlr0 = k230_ssi_readl(qts, inst->base, K230_SSI_CTRLR0);
+        k230_ssi_writel(qts, inst->base, K230_SSI_CTRLR0,
+                        ctrlr0 | K230_SSI_CTRLR0_SRL);
+        k230_ssi_writel(qts, inst->base, K230_SSI_RXFTLR, 0);
+        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_RXF);
+        k230_ssi_enable_cs(qts, inst->base, BIT(0));
+        k230_ssi_write_frame(qts, inst->base, 0x5a);
+
+        g_assert_true(k230_ssi_plic_pending(qts,
+                                           inst->first_irq +
+                                           K230_SSI_IRQ_RXF));
+        qtest_quit(qts);
+    }
+}
+
+static void test_plic_txo_routing(void)
+{
+    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
+        const K230SsiInstance *inst = &k230_ssi_instances[i];
+        QTestState *qts = k230_ssi_start();
+
+        k230_ssi_configure(qts, inst->base, K230_SSI_TMOD_TR, 32, 0);
+        k230_ssi_writel(qts, inst->base, K230_SSI_IMR,
+                        K230_SSI_INT_TXO);
+        k230_ssi_writel(qts, inst->base, K230_SSI_SSIENR, 1);
+        for (int frame = 0; frame <= K230_SSI_FIFO_DEPTH; frame++) {
+            k230_ssi_write_frame(qts, inst->base, frame);
+        }
+
+        g_assert_true(k230_ssi_plic_pending(qts,
+                                           inst->first_irq +
+                                           K230_SSI_IRQ_TXO));
+        qtest_quit(qts);
+    }
+}
+
+static void test_plic_rxo_routing(void)
+{
+    for (int i = 0; i < ARRAY_SIZE(k230_ssi_instances); i++) {
+        const K230SsiInstance *inst = &k230_ssi_instances[i];
+        QTestState *qts = k230_ssi_start();
+        uint32_t ctrlr0;
+
+        k230_ssi_configure(qts, inst->base, K230_SSI_TMOD_TR, 8, 0);
+        ctrlr0 = k230_ssi_readl(qts, inst->base, K230_SSI_CTRLR0);
+        k230_ssi_writel(qts, inst->base, K230_SSI_CTRLR0,
+                        ctrlr0 | K230_SSI_CTRLR0_SRL);
+        k230_ssi_writel(qts, inst->base, K230_SSI_IMR, K230_SSI_INT_RXO);
+        k230_ssi_enable_cs(qts, inst->base, BIT(0));
+        for (int frame = 0; frame <= K230_SSI_FIFO_DEPTH; frame++) {
+            k230_ssi_write_frame(qts, inst->base, frame);
+        }
+
+        g_assert_true(k230_ssi_plic_pending(qts,
+                                           inst->first_irq +
+                                           K230_SSI_IRQ_RXO));
+        qtest_quit(qts);
+    }
+}
 static void test_register_contract(void)
 {
     test_reset_values();
@@ -927,6 +1052,11 @@ static void test_interrupt_routing(void)
     test_rx_overflow_latches_and_rxoicr_clears();
     test_icr_clear_scope();
     test_mst_txu_done_axie_inactive_without_causes();
+    test_plic_txe_reset_routing();
+    test_plic_rxu_routing_and_instance_isolation();
+    test_plic_rxf_routing();
+    test_plic_txo_routing();
+    test_plic_rxo_routing();
 }
 
 int main(int argc, char **argv)
