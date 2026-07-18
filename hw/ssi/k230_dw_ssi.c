@@ -41,7 +41,7 @@ enum {
 /*
  * LEARNING(P5): Patch 5 的临时中文脚手架可通过下面的命令统一定位：
  *
- *   rg -n "LEARNING\(P5|TODO\(P5" hw/ssi include/hw/ssi tests/qtest
+ *   rg -n "LEARNING\(P[0-9]+|TODO" hw/ssi include/hw/ssi tests/qtest
  */
 
 /*
@@ -300,12 +300,25 @@ static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
 static uint32_t k230_dw_ssi_irq_raw_status(K230DwSsiState *s)
 {
     uint32_t status = s->irq_latched;
+    uint32_t tx_used = fifo32_num_used(&s->tx_fifo);
+    uint32_t rx_used = fifo32_num_used(&s->rx_fifo);
+    uint32_t tx_threshold =
+        FIELD_EX32(s->regs[R_TXFTLR], TXFTLR, TFT);
+    uint32_t rx_threshold =
+        FIELD_EX32(s->regs[R_RXFTLR], RXFTLR, RFT);
 
     /*
-     * TODO(P6-1): 根据 TXFLR <= TXFTLR.TFT 动态加入 TXE，根据
-     * RXFLR > RXFTLR.RFT 动态加入 RXF。不要把水位状态写回 regs[]，
-     * 也不要用 SSIENR 屏蔽 RISR。
+     * P6-1: 根据真实 FIFO 数量和阈值动态加入 TXE/RXF。TXFLR/RXFLR
+     * 是 MMIO 动态视图，不能从 regs[] 中读取缓存值代替 FIFO 数量；
+     * TXFTLR/RXFTLR 也必须只取 TFT/RFT 字段。不要把水位状态写回
+     * regs[]，也不要用 SSIENR 屏蔽 RISR。
      */
+    if (tx_used <= tx_threshold) {
+        status |= R_RISR_TXEIR_MASK;
+    }
+    if (rx_used > rx_threshold) {
+        status |= R_RISR_RXFIR_MASK;
+    }
     return status & K230_DW_SSI_IRQ_VALID_MASK;
 }
 
@@ -423,7 +436,7 @@ static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
     s->remaining_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
 
-    /* TODO(P6-3): disable 后由清空的 FIFO 水位重新驱动动态 IRQ。 */
+    /* LEARNING(P6): abort 清理锁存错误和 FIFO 后，重新驱动 IRQ 输出。 */
     k230_dw_ssi_update_irq(s);
 }
 
@@ -462,10 +475,12 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 
     if (fifo32_is_full(&s->tx_fifo)) {
         /*
-         * TODO(P6-2): 忽略超出容量的写入前锁存 TXO，并更新 IRQ。
+         * LEARNING(P6): 忽略超出容量的写入，锁存 TXO 并更新 IRQ。
          * TXO 测试必须在 SSIENR=1、SER=0 时填满 FIFO，避免同步 pump
          * 把每个新 frame 立即发走。
          */
+        s->irq_latched |= R_RISR_TXOIR_MASK;
+        k230_dw_ssi_update_irq(s);
         return;
     }
 
@@ -482,7 +497,7 @@ static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
      */
     k230_dw_ssi_run_transfer(s);
 
-    /* TODO(P6-3): TX/RX FIFO 可能在同步 pump 中变化，统一重算 IRQ。 */
+    /* LEARNING(P6): 同步 pump 可能改变 TX/RX FIFO 水位，完成后重算 IRQ。 */
     k230_dw_ssi_update_irq(s);
 }
 
@@ -822,7 +837,12 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             if(!fifo32_is_full(&s->rx_fifo)) {
                 fifo32_push(&s->rx_fifo, rx);
             } else {
-                /* TODO(P6-2): 新 frame 无处保存时锁存 RXO。 */
+                /* LEARNING(P6): 新 frame 无处保存时锁存 RXO。 */
+                s->irq_latched |= R_RISR_RXOIR_MASK;
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "%s: RX FIFO full, dropping frame\n",
+                              DEVICE(s)->canonical_path);
+                break;
             }
         }
         break;
@@ -978,7 +998,9 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
             /* LEARNING(P3): DR0..DR35 都是同一个 RX FIFO 的别名。 */
             value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
         } else {
-            /* TODO(P6-2): 空 RX FIFO 读取返回 0，并锁存 RXU。 */
+            /* LEARNING(P6): 空 RX FIFO 读取返回 0，并锁存 RXU。 */
+            value = 0;
+            s->irq_latched |= R_RISR_RXUIR_MASK;
         }
 
         /*
@@ -1292,7 +1314,7 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
         K230_DW_SSI_SPI_CTRLR0_FMC_RESET :
         K230_DW_SSI_SPI_CTRLR0_SPI_RESET;
 
-    /* TODO(P6-3): reset 值和空 FIFO 建立后重算九路输出。 */
+    /* LEARNING(P6): reset 值和空 FIFO 建立后，重算九路 IRQ 输出。 */
     k230_dw_ssi_update_irq(s);
 }
 
@@ -1308,8 +1330,18 @@ static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
     }
 }
 
+static int k230_dw_ssi_post_load(void *opaque, int version_id)
+{
+    K230DwSsiState *s = opaque;
+
+    /* VMState 字段恢复后，重新把锁存状态和 FIFO 水位驱动到 IRQ 输出。 */
+    k230_dw_ssi_update_irq(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_k230_dw_ssi = {
     .name = TYPE_K230_DW_SSI,
+    .post_load = k230_dw_ssi_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
         VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
