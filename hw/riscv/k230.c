@@ -105,13 +105,13 @@ static const MemMapEntry memmap[] = {
     [K230_DEV_CLINT] =        { 0xF04000000, 0x00400000 },
 };
 
-/*
- */
+/* Explicitly map SDK logical spi0/spi1/spi2 to the SoC child order. */
 typedef struct K230SsiRoute {
     unsigned int ssi_index;
     unsigned int irq_base;
 } K230SsiRoute;
 
+/* Array order is SDK logical spi0, spi1, spi2. */
 static const K230SsiRoute k230_ssi_routes[] = {
     { .ssi_index = 2, .irq_base = K230_SPI0_IRQ_BASE },
     { .ssi_index = 0, .irq_base = K230_SPI1_IRQ_BASE },
@@ -185,6 +185,7 @@ static void k230_connect_ssi_irqs(K230SoCState *s)
         g_assert(route->irq_base + K230_DW_SSI_IRQ_COUNT <=
                  K230_PLIC_NUM_SOURCES);
 
+        /* Each SSI output has its own PLIC source. */
         SysBusDevice *ssi = SYS_BUS_DEVICE(&s->dw_ssi[route->ssi_index]);
         for (int irq = 0; irq < K230_DW_SSI_IRQ_COUNT; irq++) {
             sysbus_connect_irq(
@@ -262,6 +263,11 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
         k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
                             &s->dw_ssi[route->ssi_index]);
+        if (logical_index == 0) {
+            /* The TRM assigns the XIP window only to logical spi0. */
+            k230_dw_ssi_set_hi_sys(&s->dw_ssi[route->ssi_index],
+                                   &s->hi_sys);
+        }
     }
 
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->hi_sys), errp)) {
@@ -284,6 +290,9 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
                     memmap[K230_DEV_QSPI1].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
+    /* Map the SSI XIP region instead of the former unimplemented window. */
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 1,
+                    memmap[K230_DEV_FLASH].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->hi_sys), 0,
                     memmap[K230_DEV_HI_SYS_CFG].base);
 
@@ -433,8 +442,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("ddrc_cfg", memmap[K230_DEV_DDRC_CFG].base,
                                 memmap[K230_DEV_DDRC_CFG].size);
 
-    create_unimplemented_device("flash", memmap[K230_DEV_FLASH].base,
-                                memmap[K230_DEV_FLASH].size);
 }
 
 static void k230_soc_class_init(ObjectClass *oc, const void *data)
@@ -532,9 +539,6 @@ static char *k230_machine_get_spi_flash(Object *obj, Error **errp)
 {
     K230MachineState *s = RISCV_K230_MACHINE(obj);
 
-    /*
-     *
-     */
     return g_strdup(s->spi_flash_model);
 }
 
@@ -543,8 +547,6 @@ static void k230_machine_set_spi_flash(Object *obj, const char *value,
 {
     K230MachineState *s = RISCV_K230_MACHINE(obj);
 
-    /*
-     */
     g_free(s->spi_flash_model);
     s->spi_flash_model = g_strdup(value);
 }
@@ -556,12 +558,6 @@ static void k230_connect_spi_flash(K230DwSsiState *ssi, unsigned int cs,
     DeviceState *flash;
     qemu_irq flash_cs;
 
-    /*
-     *
-     *
-     *
-     */
-
     flash_class = module_object_class_by_name(flash_type);
     if (!flash_class || object_class_is_abstract(flash_class) ||
         !object_class_dynamic_cast(flash_class, TYPE_M25P80)) {
@@ -572,18 +568,12 @@ static void k230_connect_spi_flash(K230DwSsiState *ssi, unsigned int cs,
 
     flash = qdev_new(flash_type);
 
-    /*
-     */
     if (dinfo) {
         qdev_prop_set_drive(flash, "drive", blk_by_legacy_dinfo(dinfo));
     }
 
-    /*
-     */
     qdev_realize_and_unref(flash, BUS(ssi->spi), &error_fatal);
 
-    /*
-     */
     flash_cs = qdev_get_gpio_in_named(flash, SSI_GPIO_CS, 0);
     qdev_connect_gpio_out_named(DEVICE(ssi), "cs", cs, flash_cs);
 }
@@ -620,9 +610,7 @@ static void k230_machine_init(MachineState *machine)
     qdev_realize(DEVICE(&s->soc), NULL, &error_fatal);
 
     if (s->spi_flash_model) {
-        /*
-         *
-         */
+        /* SDK spi0 at 0x91584000 is dw_ssi[2]. */
         k230_connect_spi_flash(&s->soc.dw_ssi[2], 0,
                                s->spi_flash_model,
                                drive_get(IF_MTD, 0, 0));
@@ -644,8 +632,6 @@ static void k230_machine_instance_finalize(Object *obj)
 {
     K230MachineState *s = RISCV_K230_MACHINE(obj);
 
-    /*
-     */
     g_clear_pointer(&s->spi_flash_model, g_free);
 }
 
@@ -659,9 +645,6 @@ static void k230_machine_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_id = "riscv.K230.ram"; /* DDR */
     mc->default_ram_size = memmap[K230_DEV_DDRC].size;
 
-    /*
-     *
-     */
     object_class_property_add_str(oc, "spi-flash",
                                   k230_machine_get_spi_flash,
                                   k230_machine_set_spi_flash);

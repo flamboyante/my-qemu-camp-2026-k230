@@ -55,6 +55,7 @@ typedef struct K230MachineState {
     K230SoCState soc;
     Notifier machine_done;
 
+    /* Board-level SPI NOR model selection; protocol state belongs to m25p80. */
     char *spi_flash_model;
 } K230MachineState;
 
