@@ -106,16 +106,17 @@ static const MemMapEntry memmap[] = {
 };
 
 /*
- * LEARNING(P7): SDK 逻辑 spi0/spi1/spi2 与 dw_ssi[] 的创建顺序不同。
- * IRQ base 必须通过显式表选择，不能按数组下标或 MMIO 地址
- * 推导。
+ * LEARNING(P7/P8): SDK 逻辑 spi0/spi1/spi2 与 dw_ssi[] 的创建顺序
+ * 不同。PLIC 接线和 HI_SYS 状态连接必须共用显式 SoC 拓扑，
+ * 不能按数组下标或 MMIO 地址推导。
  */
-typedef struct K230SsiIrqRoute {
+typedef struct K230SsiRoute {
     unsigned int ssi_index;
     unsigned int irq_base;
-} K230SsiIrqRoute;
+} K230SsiRoute;
 
-static const K230SsiIrqRoute k230_ssi_irq_routes[] = {
+/* 数组下标固定为 SDK 逻辑 spi0/spi1/spi2。 */
+static const K230SsiRoute k230_ssi_routes[] = {
     { .ssi_index = 2, .irq_base = K230_SPI0_IRQ_BASE },
     { .ssi_index = 0, .irq_base = K230_SPI1_IRQ_BASE },
     { .ssi_index = 1, .irq_base = K230_SPI2_IRQ_BASE },
@@ -135,6 +136,8 @@ static void k230_soc_init(Object *obj)
                             TYPE_K230_DW_SSI);
     object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
                             TYPE_K230_DW_SSI);
+    object_initialize_child(obj, "k230-hi-sys", &s->hi_sys,
+                            TYPE_K230_HI_SYS);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -178,8 +181,9 @@ static void k230_create_uart(MemoryRegion *sys_mem, DeviceState *plic,
 
 static void k230_connect_ssi_irqs(K230SoCState *s)
 {
-    for (int route_idx = 0; route_idx < ARRAY_SIZE(k230_ssi_irq_routes); route_idx++) {
-        const K230SsiIrqRoute *route = &k230_ssi_irq_routes[route_idx];
+    for (int route_idx = 0; route_idx < ARRAY_SIZE(k230_ssi_routes);
+         route_idx++) {
+        const K230SsiRoute *route = &k230_ssi_routes[route_idx];
 
         g_assert(route->ssi_index < ARRAY_SIZE(s->dw_ssi));
         g_assert(route->irq_base + K230_DW_SSI_IRQ_COUNT <=
@@ -187,9 +191,11 @@ static void k230_connect_ssi_irqs(K230SoCState *s)
 
         /* 每路 IRQ 独立连接到对应的 PLIC source，禁止 OR gate。 */
         SysBusDevice *ssi = SYS_BUS_DEVICE(&s->dw_ssi[route->ssi_index]);
-        for (unsigned int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
-            sysbus_connect_irq(ssi, i,
-                qdev_get_gpio_in(DEVICE(s->c908_plic), route->irq_base + i));
+        for (int irq = 0; irq < K230_DW_SSI_IRQ_COUNT; irq++) {
+            sysbus_connect_irq(
+                ssi, irq,
+                qdev_get_gpio_in(DEVICE(s->c908_plic),
+                                 route->irq_base + irq));
         }
     }
 }
@@ -254,6 +260,19 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    for (int logical_index = 0;
+         logical_index < ARRAY_SIZE(k230_ssi_routes);
+         logical_index++) {
+        const K230SsiRoute *route = &k230_ssi_routes[logical_index];
+
+        k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
+                            &s->dw_ssi[route->ssi_index]);
+    }
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->hi_sys), errp)) {
+        return;
+    }
+
     k230_connect_ssi_irqs(s);
 
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->wdt[0]), 0, memmap[K230_DEV_WDT0].base);
@@ -270,6 +289,8 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
                     memmap[K230_DEV_QSPI1].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->hi_sys), 0,
+                    memmap[K230_DEV_HI_SYS_CFG].base);
 
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
@@ -413,9 +434,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
     create_unimplemented_device("sd1", memmap[K230_DEV_SD1].base,
                                 memmap[K230_DEV_SD1].size);
-
-    create_unimplemented_device("hi_sys_cfg", memmap[K230_DEV_HI_SYS_CFG].base,
-                                memmap[K230_DEV_HI_SYS_CFG].size);
 
     create_unimplemented_device("ddrc_cfg", memmap[K230_DEV_DDRC_CFG].base,
                                 memmap[K230_DEV_DDRC_CFG].size);

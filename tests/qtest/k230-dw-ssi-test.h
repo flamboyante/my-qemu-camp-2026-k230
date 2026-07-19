@@ -214,6 +214,7 @@ void k230_ssi_register_pio_tests(void);
 void k230_ssi_register_irq_tests(void);
 void k230_ssi_register_flash_tests(void);
 void k230_ssi_register_qspi_tests(void);
+void k230_ssi_register_hi_sys_tests(void);
 void k230_ssi_register_xip_tests(void);
 void k230_ssi_register_plic_tests(void);
 

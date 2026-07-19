@@ -409,6 +409,7 @@ qtests = {
     'k230-dw-ssi-plic-test.c',
     'k230-dw-ssi-flash-test.c',
     'k230-dw-ssi-qspi-test.c',
+    'k230-dw-ssi-hi-sys-test.c',
     'k230-dw-ssi-xip-test.c',
   ),
   'migration-test': test_migration_files + migration_tls_files + migration_colo_files,
