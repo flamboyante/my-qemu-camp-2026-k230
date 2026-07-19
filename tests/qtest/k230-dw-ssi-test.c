@@ -1106,6 +1106,94 @@ static void test_plic_rxo_routing(void)
         qtest_quit(qts);
     }
 }
+#define FLASH_CMD_JEDEC         0x9f
+
+static void assert_enhanced_config_rejected(QTestState *qts,
+                                            uint32_t tmod, uint32_t frf,
+                                            uint32_t trans_type,
+                                            uint32_t extra_spi_ctrlr0)
+{
+    uint32_t ctrlr0;
+    uint32_t spi_ctrlr0;
+
+    k230_ssi_configure(qts, K230_SPI0_BASE, tmod, 8, 0);
+    ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0);
+    ctrlr0 &= ~K230_SSI_CTRLR0_SPI_FRF_MASK;
+    ctrlr0 |= frf << K230_SSI_CTRLR0_SPI_FRF_SHIFT;
+    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(trans_type) |
+                 K230_SSI_SPI_CTRLR0_INST_L_8 |
+                 extra_spi_ctrlr0;
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_CTRLR0, ctrlr0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
+    k230_ssi_enable_cs(qts, K230_SPI0_BASE, BIT(0));
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, FLASH_CMD_JEDEC);
+
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_TXFLR),
+                     ==, 1);
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RXFLR),
+                     ==, 0);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_SR) &
+                    K230_SSI_SR_BUSY, ==, 0);
+
+    k230_ssi_disable(qts, K230_SPI0_BASE);
+}
+
+static void test_unsupported_enhanced_configs_do_not_transfer(void)
+{
+    QTestState *qts = k230_ssi_start();
+
+    assert_enhanced_config_rejected(qts, K230_SSI_TMOD_RO,
+                                    K230_SSI_FRF_OCTAL, 0, 0);
+    assert_enhanced_config_rejected(
+        qts, K230_SSI_TMOD_RO, K230_SSI_FRF_QUAD, 0,
+        K230_SSI_SPI_CTRLR0_SPI_DDR_EN |
+        K230_SSI_SPI_CTRLR0_INST_DDR_EN |
+        K230_SSI_SPI_CTRLR0_RXDS_EN |
+        K230_SSI_SPI_CTRLR0_RXDS_SIG_EN);
+    assert_enhanced_config_rejected(qts, K230_SSI_TMOD_RO,
+                                    K230_SSI_FRF_QUAD, 3, 0);
+    assert_enhanced_config_rejected(qts, K230_SSI_TMOD_TR,
+                                    K230_SSI_FRF_QUAD, 0, 0);
+    assert_enhanced_config_rejected(qts, K230_SSI_TMOD_EEPROM_READ,
+                                    K230_SSI_FRF_QUAD, 0, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_supported_enhanced_command_is_parsed(void)
+{
+    QTestState *qts = k230_ssi_start();
+    uint32_t ctrlr0;
+    uint32_t spi_ctrlr0;
+
+    k230_ssi_configure(qts, K230_SPI0_BASE, K230_SSI_TMOD_RO, 8, 3);
+    ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0);
+    ctrlr0 |= K230_SSI_FRF_QUAD << K230_SSI_CTRLR0_SPI_FRF_SHIFT;
+    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(1) |
+                 K230_SSI_SPI_CTRLR0_ADDR_L(24) |
+                 K230_SSI_SPI_CTRLR0_INST_L_8 |
+                 K230_SSI_SPI_CTRLR0_WAIT(8);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_CTRLR0, ctrlr0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
+    k230_ssi_enable_cs(qts, K230_SPI0_BASE, BIT(0));
+
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, FLASH_CMD_JEDEC);
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_TXFLR),
+                     ==, 1);
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, 0x123456);
+
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_TXFLR),
+                     ==, 0);
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RXFLR),
+                     ==, 4);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_SR) &
+                    K230_SSI_SR_BUSY, ==, 0);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(k230_ssi_read_frame(qts, K230_SPI0_BASE), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
 
 static void test_register_contract(void)
 {
@@ -1155,6 +1243,12 @@ static void test_plic_routing(void)
     test_plic_rxo_routing();
 }
 
+static void test_qspi_config(void)
+{
+    test_unsupported_enhanced_configs_do_not_transfer();
+    test_supported_enhanced_command_is_parsed();
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1164,5 +1258,6 @@ int main(int argc, char **argv)
     qtest_add_func("/k230-dw-ssi/interrupt-controller",
                    test_interrupt_controller);
     qtest_add_func("/k230-dw-ssi/plic-routing", test_plic_routing);
+    qtest_add_func("/k230-dw-ssi/qspi-config", test_qspi_config);
     return g_test_run();
 }
