@@ -169,6 +169,7 @@ static void k230_soc_init(Object *obj)
                             TYPE_DW_SSI);
     object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
                             TYPE_DW_SSI);
+    object_initialize_child(obj, "k230-rmu",  &s->rmu,    TYPE_K230_RMU);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -309,6 +310,16 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
     create_unimplemented_device("hi_sys", memmap[K230_DEV_HI_SYS_CFG].base,
                                 memmap[K230_DEV_HI_SYS_CFG].size);
+    /* RMU (reset management unit) */
+    /* Link the watchdogs so the RMU can reset them (before realize). */
+    object_property_set_link(OBJECT(&s->rmu), "wdt0",
+                             OBJECT(&s->wdt[0]), &error_abort);
+    object_property_set_link(OBJECT(&s->rmu), "wdt1",
+                             OBJECT(&s->wdt[1]), &error_abort);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->rmu), errp)) {
+        return;
+    }
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->rmu), 0, memmap[K230_DEV_RMU].base);
 
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
@@ -371,9 +382,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
     create_unimplemented_device("cmu", memmap[K230_DEV_CMU].base,
                                 memmap[K230_DEV_CMU].size);
-
-    create_unimplemented_device("rmu", memmap[K230_DEV_RMU].base,
-                                memmap[K230_DEV_RMU].size);
 
     create_unimplemented_device("boot", memmap[K230_DEV_BOOT].base,
                                 memmap[K230_DEV_BOOT].size);
