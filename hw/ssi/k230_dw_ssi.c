@@ -29,6 +29,11 @@
 #define K230_DW_SSI_AXIARLEN_RESET          0x00000700
 #define K230_DW_SSI_VERSION                 0x3130332a
 
+/*
+ *
+ *   rg -n "LEARNING\(P3" hw/ssi include/hw/ssi tests/qtest
+ */
+
 REG32(CTRLR0, 0x000)
     FIELD(CTRLR0, DFS, 0, 5)
     FIELD(CTRLR0, FRF, 6, 2)
@@ -248,6 +253,8 @@ REG32(XIP_WRITE_CTRL, 0x148)
 #define K230_DW_SSI_AXIAR0_WRITABLE_MASK R_AXIAR0_AXIAR_0_31_MASK
 #define K230_DW_SSI_AXIAR1_WRITABLE_MASK R_AXIAR1_AXIAR_32_63_MASK
 
+/*
+ */
 static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
                                      uint32_t value, uint32_t mask)
 {
@@ -256,6 +263,8 @@ static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
 
 static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
 {
+    /*
+     */
     unsigned int bits = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, DFS) + 1;
 
     return bits == 32 ? UINT32_MAX : MAKE_64BIT_MASK(0, bits);
@@ -264,6 +273,8 @@ static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
 
 static bool k230_dw_ssi_enabled(K230DwSsiState *s)
 {
+    /*
+     */
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
 
@@ -318,9 +329,16 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
 
 static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
 {
+    /*
+     */
     k230_dw_ssi_deselect(s);
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
+
+    /*
+     */
+    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->remaining_frames = 0;
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -329,6 +347,9 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
     uint32_t rx_used = fifo32_num_used(&s->rx_fifo);
     uint32_t sr = 0;
 
+    /*
+     */
+    sr = FIELD_DP32(sr, SR, BUSY, s->phase != K230_DW_SSI_PHASE_IDLE);
     sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
     sr = FIELD_DP32(sr, SR, TFE, tx_used == 0);
     sr = FIELD_DP32(sr, SR, RFNE, rx_used != 0);
@@ -342,21 +363,152 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s);
 
 static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 {
-    if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
+    /*
+     */
+    if (!k230_dw_ssi_enabled(s)) {
         return;
     }
 
     if (fifo32_is_full(&s->tx_fifo)) {
+        /*
+         */
         return;
     }
 
     fifo32_push(&s->tx_fifo, tx & k230_dw_ssi_frame_masked(s));
+
+    /*
+     */
     k230_dw_ssi_run_transfer(s);
 }
 
+/*
+ *
+ *
+ */
+static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
+                                        uint32_t tx)
+{
+    uint32_t mask = k230_dw_ssi_frame_masked(s);
+    uint32_t rx;
+
+    tx &= mask;
+
+    if (FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SRL)) {
+    } else {
+    }
+
+    return rx & mask;
+}
 
 static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
 {
+    uint32_t spi_frf;
+    uint32_t tmod;
+
+    if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
+        return;
+    }
+
+    spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
+    if (spi_frf != 0) {
+        return;
+    }
+
+    tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
+
+    switch (tmod) {
+    case 0: /* TX_AND_RX */
+        /*
+         *
+         */
+        while (!fifo32_is_empty(&s->tx_fifo)) {
+            uint32_t tx = fifo32_pop(&s->tx_fifo);
+            uint32_t rx = k230_dw_ssi_send_frame(s, tx);
+            if (!fifo32_is_full(&s->rx_fifo)) {
+                fifo32_push(&s->rx_fifo, rx);
+            }
+        }
+        break;
+    case 1: /* TX_ONLY */
+        /*
+         *
+         */
+        while (!fifo32_is_empty(&s->tx_fifo)) {
+            uint32_t tx = fifo32_pop(&s->tx_fifo);
+            k230_dw_ssi_send_frame(s, tx);
+        }
+        break;
+    case 2: /* RX_ONLY */
+        /*
+         *
+         *
+         */
+        switch (s->phase) {
+        case K230_DW_SSI_PHASE_IDLE:
+            if (fifo32_is_empty(&s->tx_fifo)) {
+                break;
+            }
+            fifo32_pop(&s->tx_fifo);
+            s->phase = K230_DW_SSI_PHASE_RX_ONLY;
+            s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
+                                              NDF) + 1;
+            /* Fall through. */
+        case K230_DW_SSI_PHASE_RX_ONLY:
+            while (!fifo32_is_full(&s->rx_fifo) &&
+                   s->remaining_frames > 0) {
+                uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+
+                fifo32_push(&s->rx_fifo, rx);
+                s->remaining_frames--;
+            }
+            if (s->remaining_frames == 0) {
+                s->phase = K230_DW_SSI_PHASE_IDLE;
+            }
+            break;
+        }
+        break;
+    case 3: /* EEPROM_READ */
+        /*
+         *
+         */
+        switch (s->phase) {
+        case K230_DW_SSI_PHASE_IDLE:
+            if (fifo32_is_empty(&s->tx_fifo)) {
+                break;
+            }
+            s->phase = K230_DW_SSI_PHASE_EEPROM_COMMAND;
+            /* Fall through. */
+        case K230_DW_SSI_PHASE_EEPROM_COMMAND:
+            if (fifo32_is_empty(&s->tx_fifo)) {
+                break;
+            }
+            while (!fifo32_is_empty(&s->tx_fifo)) {
+                uint32_t tx = fifo32_pop(&s->tx_fifo);
+
+                k230_dw_ssi_send_frame(s, tx);
+            }
+            s->phase = K230_DW_SSI_PHASE_EEPROM_DATA;
+            s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
+                                              NDF) + 1;
+            /* Fall through. */
+        case K230_DW_SSI_PHASE_EEPROM_DATA:
+            while (!fifo32_is_full(&s->rx_fifo) &&
+                   s->remaining_frames > 0) {
+                uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+
+                fifo32_push(&s->rx_fifo, rx);
+                s->remaining_frames--;
+            }
+            if (s->remaining_frames == 0) {
+                s->phase = K230_DW_SSI_PHASE_IDLE;
+            }
+            break;
+        }
+        break;
+    default:
+        g_assert_not_reached();
+    }
 }
 
 
@@ -424,6 +576,10 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         if (!fifo32_is_empty(&s->rx_fifo)) {
             value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
         }
+
+        /*
+         */
+        k230_dw_ssi_run_transfer(s);
         return value;
     }
 
@@ -543,6 +699,9 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         }
 
         k230_dw_ssi_update_cs(s);
+        /*
+         */
+        k230_dw_ssi_run_transfer(s);
         break;
     }
     case A_MWCR:
@@ -551,6 +710,8 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         break;
     case A_SER:
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
+        k230_dw_ssi_update_cs(s);
+        k230_dw_ssi_run_transfer(s);
         break;
     case A_BAUDR:
         k230_dw_ssi_write_masked(s, R_BAUDR, value,
@@ -684,6 +845,8 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     memset(s->regs, 0, sizeof(s->regs));
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
+    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->remaining_frames = 0;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -715,6 +878,8 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
         VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
         VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
+        VMSTATE_UINT32(phase, K230DwSsiState),
+        VMSTATE_UINT32(remaining_frames, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },
