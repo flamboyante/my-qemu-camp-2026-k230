@@ -117,6 +117,11 @@ struct K230DwSsiState {
     uint32_t remaining_frames;
     K230DwSsiEnhancedCommand enhanced;
 
+    bool idma_spidr_written;
+    bool idma_spiar_written;
+    bool idma_axiar0_written;
+    bool idma_completed;
+
     uint32_t num_cs;
     uint32_t max_lines;
     int active_cs;

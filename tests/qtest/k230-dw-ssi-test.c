@@ -18,6 +18,7 @@ int main(int argc, char **argv)
     k230_ssi_register_qspi_tests();
     k230_ssi_register_irq_tests();
     k230_ssi_register_plic_tests();
+    k230_ssi_register_idma_tests();
     k230_ssi_register_hi_sys_tests();
     k230_ssi_register_xip_tests();
 

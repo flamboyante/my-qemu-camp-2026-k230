@@ -218,5 +218,6 @@ void k230_ssi_register_qspi_tests(void);
 void k230_ssi_register_hi_sys_tests(void);
 void k230_ssi_register_xip_tests(void);
 void k230_ssi_register_plic_tests(void);
+void k230_ssi_register_idma_tests(void);
 
 #endif

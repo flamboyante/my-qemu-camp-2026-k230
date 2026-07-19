@@ -17,6 +17,7 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "system/dma.h"
 
 #define K230_DW_SSI_FIFO_CAPACITY 256
 
@@ -619,20 +620,11 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
     return true;
 }
 
-static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
+static bool k230_dw_ssi_parse_enhanced_command(
+    K230DwSsiState *s, uint32_t instruction, uint32_t address,
+    K230DwSsiEnhancedCommand *command)
 {
-    /*
-     * LEARNING(P5-2): 根据 CTRLR0/SPI_CTRLR0/CTRLR1 和 TX FIFO 构造
-     * s->enhanced，并在成功后把 phase 置为 ENHANCED_INSTRUCTION。
-     *
-     * 关键编码：INST_L=0/4/8/16 bit；ADDR_L 以 4 bit 为单位；实际数据
-     * 帧数为 NDF+1。RO 的 TX FIFO 中，SDK PIO 路径依次写 instruction
-     * 和 address；它们是两个“逻辑字段”，不能按 DFS=8 提前截断地址。
-     * XIP_MD_BIT_EN=1 时还要从 XIP_MODE_BITS 取得 mode_bits，并把
-     * XIP_MBL=0/1/2/3 解码为 2/4/8/16 bit。
-     *
-     * FIFO 项不足时直接返回 false，且不要只 pop 一半命令。
-     */
+    /* Decode the shared enhanced command fields for PIO and IDMA. */
     uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     uint32_t inst_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, INST_L);
     uint32_t addr_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, ADDR_L);
@@ -641,10 +633,9 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
     uint32_t inst_bits;
     uint32_t addr_bits = addr_l << 2;
     uint32_t mode_bits = 0;
-    uint32_t required_items;
     bool mode_bits_enabled =
         FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, XIP_MD_BIT_EN);
-    K230DwSsiEnhancedCommand command = { 0 };
+    K230DwSsiEnhancedCommand parsed = { 0 };
 
     /* INST_L 是编码值：0/1/2/3 分别代表 0/4/8/16 bit。 */
     inst_bits = inst_l ? (1U << (inst_l + 1)) : 0;
@@ -664,8 +655,51 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
         mode_bits = 1U << (mode_length_encoding + 1);
     }
 
-    /* instruction/address 是两个逻辑字段，各占一个 FIFO 项。 */
-    required_items = (inst_bits != 0) + (addr_bits != 0);
+    parsed.instruction_bits = inst_bits;
+    parsed.address_bits = addr_bits;
+    parsed.mode_bits = mode_bits;
+    parsed.mode_bits_enabled = mode_bits_enabled;
+    parsed.wait_cycles =
+        FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, WAIT_CYCLES);
+    parsed.data_frames =
+        FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
+    parsed.spi_frf = spi_frf;
+    parsed.trans_type = trans_type;
+    parsed.tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
+    parsed.instruction = instruction &
+        (uint32_t)MAKE_64BIT_MASK(0, inst_bits);
+    parsed.address = address & (uint32_t)MAKE_64BIT_MASK(0, addr_bits);
+    if (mode_bits_enabled) {
+        parsed.mode = s->regs[R_XIP_MODE_BITS] &
+            (uint32_t)MAKE_64BIT_MASK(0, mode_bits);
+    }
+
+    *command = parsed;
+    return true;
+}
+
+static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
+{
+    /*
+     * LEARNING(P5-2): 根据 CTRLR0/SPI_CTRLR0/CTRLR1 和 TX FIFO 构造
+     * s->enhanced，并在成功后把 phase 置为 ENHANCED_INSTRUCTION。
+     *
+     * 关键编码：INST_L=0/4/8/16 bit；ADDR_L 以 4 bit 为单位；实际数据
+     * 帧数为 NDF+1。RO 的 TX FIFO 中，SDK PIO 路径依次写 instruction
+     * 和 address；它们是两个“逻辑字段”，不能按 DFS=8 提前截断地址。
+     * XIP_MD_BIT_EN=1 时还要从 XIP_MODE_BITS 取得 mode_bits，并把
+     * XIP_MBL=0/1/2/3 解码为 2/4/8/16 bit。
+     *
+     * FIFO 项不足时直接返回 false，且不要只 pop 一半命令。
+     */
+    uint32_t inst_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, INST_L);
+    uint32_t addr_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, ADDR_L);
+    uint32_t inst_bits = inst_l ? (1U << (inst_l + 1)) : 0;
+    uint32_t addr_bits = addr_l << 2;
+    uint32_t required_items = (inst_bits != 0) + (addr_bits != 0);
+    uint32_t instruction = 0;
+    uint32_t address = 0;
+    K230DwSsiEnhancedCommand command;
 
     /*
      * 数据不足时保持 FIFO、phase 和 descriptor 不变。
@@ -675,35 +709,152 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
         return false;
     }
 
-    command.instruction_bits = inst_bits;
-    command.address_bits = addr_bits;
-    command.mode_bits = mode_bits;
-    command.mode_bits_enabled = mode_bits_enabled;
-    command.wait_cycles =
-        FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, WAIT_CYCLES);
-    command.data_frames =
-        FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
-    command.spi_frf = spi_frf;
-    command.trans_type = trans_type;
-    command.tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
-
     if (inst_bits != 0) {
-        command.instruction = fifo32_pop(&s->tx_fifo) &
-            (uint32_t)MAKE_64BIT_MASK(0, inst_bits);
+        instruction = fifo32_pop(&s->tx_fifo);
     }
     if (addr_bits != 0) {
-        command.address = fifo32_pop(&s->tx_fifo) &
-            (uint32_t)MAKE_64BIT_MASK(0, addr_bits);
+        address = fifo32_pop(&s->tx_fifo);
     }
-    if (mode_bits_enabled) {
-        command.mode = s->regs[R_XIP_MODE_BITS] &
-            (uint32_t)MAKE_64BIT_MASK(0, mode_bits);
+
+    if (!k230_dw_ssi_parse_enhanced_command(s, instruction, address,
+                                             &command)) {
+        g_assert_not_reached();
     }
 
     s->enhanced = command;
     s->remaining_frames = command.data_frames;
     s->phase = K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION;
     return true;
+}
+
+static uint64_t k230_dw_ssi_idma_address(K230DwSsiState *s)
+{
+    return s->regs[R_AXIAR0] | ((uint64_t)s->regs[R_AXIAR1] << 32);
+}
+
+static bool k230_dw_ssi_idma_ready(K230DwSsiState *s)
+{
+    return FIELD_EX32(s->regs[R_DMACR], DMACR, IDMAE) &&
+           FIELD_EX32(s->regs[R_DMACR], DMACR, AINC) &&
+           k230_dw_ssi_enabled(s) && s->regs[R_SER] &&
+           s->idma_spidr_written && s->idma_spiar_written &&
+           s->idma_axiar0_written &&
+           !s->idma_completed &&
+           s->phase == K230_DW_SSI_PHASE_IDLE &&
+           fifo32_is_empty(&s->tx_fifo) && fifo32_is_empty(&s->rx_fifo);
+}
+
+static void k230_dw_ssi_idma_complete(K230DwSsiState *s)
+{
+    s->idma_completed = true;
+    s->irq_latched |= R_RISR_DONER_MASK;
+    k230_dw_ssi_update_irq(s);
+}
+
+static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
+                                             uint32_t value,
+                                             uint32_t bits);
+static uint32_t k230_dw_ssi_dummy_bytes(uint32_t spi_frf,
+                                         uint32_t trans_type,
+                                         uint32_t wait_cycles);
+
+static void k230_dw_ssi_try_idma(K230DwSsiState *s)
+{
+    K230DwSsiEnhancedCommand command;
+    uint8_t *buffer;
+    uint64_t address;
+    uint32_t length;
+    MemTxResult result;
+
+    if (!k230_dw_ssi_idma_ready(s)) {
+        return;
+    }
+
+    k230_dw_ssi_update_cs(s);
+    if (s->active_cs < 0) {
+        return;
+    }
+    if (!k230_dw_ssi_enhanced_config_supported(s) ||
+        !k230_dw_ssi_parse_enhanced_command(s, s->regs[R_SPIDR],
+                                             s->regs[R_SPIAR], &command)) {
+        k230_dw_ssi_deselect(s);
+        return;
+    }
+
+    length = command.data_frames;
+    address = k230_dw_ssi_idma_address(s);
+    if (address > UINT64_MAX - (length - 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: IDMA address range overflows\n",
+                      DEVICE(s)->canonical_path);
+        return;
+    }
+
+    buffer = g_malloc(length);
+    if (command.tmod == K230_DW_SSI_TMOD_TO) {
+        result = dma_memory_read(&address_space_memory, address, buffer,
+                                 length, MEMTXATTRS_UNSPECIFIED);
+        if (result != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: IDMA source memory access failed\n",
+                          DEVICE(s)->canonical_path);
+            g_free(buffer);
+            k230_dw_ssi_deselect(s);
+            return;
+        }
+    }
+
+    if (command.instruction_bits != 0) {
+        k230_dw_ssi_send_enhanced_field(s, command.instruction,
+                                         command.instruction_bits);
+    }
+    if (command.address_bits != 0) {
+        k230_dw_ssi_send_enhanced_field(s, command.address,
+                                         command.address_bits);
+    }
+    if (command.mode_bits_enabled) {
+        k230_dw_ssi_send_enhanced_field(s, command.mode, command.mode_bits);
+    }
+    if (!command.mode_bits_enabled && command.trans_type == 1 &&
+        command.wait_cycles >= 2) {
+        k230_dw_ssi_send_enhanced_field(s, s->regs[R_XIP_MODE_BITS], 8);
+        command.wait_cycles -= 2;
+    }
+    uint32_t dummy_bytes = k230_dw_ssi_dummy_bytes(
+        command.spi_frf, command.trans_type, command.wait_cycles);
+
+    for (uint32_t i = 0; i < dummy_bytes; i++) {
+        ssi_transfer(s->spi, 0);
+    }
+
+    switch (command.tmod) {
+    case K230_DW_SSI_TMOD_RO:
+        for (uint32_t i = 0; i < length; i++) {
+            buffer[i] = ssi_transfer(s->spi, 0);
+        }
+        result = dma_memory_write(&address_space_memory, address, buffer,
+                                  length, MEMTXATTRS_UNSPECIFIED);
+        break;
+    case K230_DW_SSI_TMOD_TO:
+        for (uint32_t i = 0; i < length; i++) {
+            ssi_transfer(s->spi, buffer[i]);
+        }
+        result = MEMTX_OK;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    k230_dw_ssi_deselect(s);
+    g_free(buffer);
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: IDMA destination memory access failed\n",
+                      DEVICE(s)->canonical_path);
+        return;
+    }
+
+    k230_dw_ssi_idma_complete(s);
 }
 
 static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
@@ -1301,8 +1452,10 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
                R_RISR_RXOIR_MASK | R_RISR_MSTIR_MASK);
         break;
     case A_AXIECR:
-    case A_DONECR:
         value = 0;
+        break;
+    case A_DONECR:
+        value = k230_dw_ssi_irq_read_clear(s, R_RISR_DONER_MASK);
         break;
     default:
         if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
@@ -1371,6 +1524,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
          * 的 TX FIFO 首次具备发送条件，因此需要主动运行 pump。
          */
         k230_dw_ssi_run_transfer(s);
+        k230_dw_ssi_try_idma(s);
         k230_dw_ssi_update_irq(s);
         break;
     }
@@ -1383,6 +1537,7 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
         k230_dw_ssi_update_cs(s);
         k230_dw_ssi_run_transfer(s);
+        k230_dw_ssi_try_idma(s);
         k230_dw_ssi_update_irq(s);
         break;
     case A_BAUDR:
@@ -1420,12 +1575,10 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case A_DMACR:
         k230_dw_ssi_write_masked(s, R_DMACR, value,
                                  K230_DW_SSI_DMACR_WRITABLE_MASK);
-        if (FIELD_EX32(s->regs[R_DMACR], DMACR, IDMAE)) {
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: DMACR.IDMAE enabled, internal DMA is not "
-                          "implemented\n",
-                          DEVICE(s)->canonical_path);
+        if (!FIELD_EX32(s->regs[R_DMACR], DMACR, IDMAE)) {
+            s->idma_completed = false;
         }
+        k230_dw_ssi_try_idma(s);
         break;
     case A_AXIAWLEN:
         k230_dw_ssi_write_masked(s, R_AXIAWLEN, value,
@@ -1471,21 +1624,37 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case A_SPIDR:
         k230_dw_ssi_write_masked(s, R_SPIDR, value,
                                  K230_DW_SSI_SPIDR_WRITABLE_MASK);
+        s->idma_spidr_written = true;
+        s->idma_completed = false;
+        k230_dw_ssi_try_idma(s);
         break;
     case A_SPIAR:
         k230_dw_ssi_write_masked(s, R_SPIAR, value,
                                  K230_DW_SSI_SPIAR_WRITABLE_MASK);
+        s->idma_spiar_written = true;
+        s->idma_completed = false;
+        k230_dw_ssi_try_idma(s);
         break;
     case A_AXIAR0:
         k230_dw_ssi_write_masked(s, R_AXIAR0, value,
                                  K230_DW_SSI_AXIAR0_WRITABLE_MASK);
+        s->idma_axiar0_written = true;
+        s->idma_completed = false;
+        k230_dw_ssi_try_idma(s);
         break;
     case A_AXIAR1:
         k230_dw_ssi_write_masked(s, R_AXIAR1, value,
                                  K230_DW_SSI_AXIAR1_WRITABLE_MASK);
+        s->idma_completed = false;
+        k230_dw_ssi_try_idma(s);
+        break;
+    case A_DONECR:
+        if (value & R_DONECR_DONECR_MASK) {
+            s->irq_latched &= ~R_RISR_DONER_MASK;
+            k230_dw_ssi_update_irq(s);
+        }
         break;
     case A_AXIECR:
-    case A_DONECR:
         break;
     default:
         if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
@@ -1524,6 +1693,10 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     s->remaining_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
     s->irq_latched = 0;
+    s->idma_spidr_written = false;
+    s->idma_spiar_written = false;
+    s->idma_axiar0_written = false;
+    s->idma_completed = false;
     s->sleep_status = false;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
@@ -1592,6 +1765,10 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32(enhanced.trans_type, K230DwSsiState),
         VMSTATE_UINT32(enhanced.tmod, K230DwSsiState),
         VMSTATE_BOOL(enhanced.mode_bits_enabled, K230DwSsiState),
+        VMSTATE_BOOL(idma_spidr_written, K230DwSsiState),
+        VMSTATE_BOOL(idma_spiar_written, K230DwSsiState),
+        VMSTATE_BOOL(idma_axiar0_written, K230DwSsiState),
+        VMSTATE_BOOL(idma_completed, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
         VMSTATE_BOOL(sleep_status, K230DwSsiState),
         VMSTATE_END_OF_LIST()
