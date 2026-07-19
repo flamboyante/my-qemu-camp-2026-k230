@@ -1,6 +1,11 @@
 /*
  * K230 HI_SYS_CONFIG SSI wrapper
  *
+ * Copyright (c) 2026 Kangjie Huang <flamboyant.h.01@gmail.com>
+ *
+ * K230 Technical Reference Manual V0.3.1 (2024-11-18):
+ * https://github.com/revyos/external-docs/blob/master/K230/en-us/K230_Technical_Reference_Manual_V0.3.1_20241118.pdf
+ *
  * The device owns HI_SYS.SSI_CTRL at 0x91585068.  It observes the three
  * logical SSI instances and exports the spi0 XIP enable state to the
  * later XIP window implementation.

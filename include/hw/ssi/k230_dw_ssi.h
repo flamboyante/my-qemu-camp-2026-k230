@@ -1,5 +1,10 @@
 /*
- * K230 DWC SSI compatible SPI/QSPI controller
+ * Kendryte K230 DesignWare SSI
+ *
+ * Copyright (c) 2026 Kangjie Huang <flamboyant.h.01@gmail.com>
+ *
+ * K230 Technical Reference Manual V0.3.1 (2024-11-18):
+ * https://github.com/revyos/external-docs/blob/master/K230/en-us/K230_Technical_Reference_Manual_V0.3.1_20241118.pdf
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -19,6 +24,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(K230DwSsiState, K230_DW_SSI)
 #define K230_DW_SSI_REGS_SIZE 0x14c
 #define K230_DW_SSI_NUM_REGS \
     (K230_DW_SSI_REGS_SIZE / sizeof(uint32_t))
+/* spi0 memory-mapped SPI NOR read window. */
+#define K230_DW_SSI_XIP_WINDOW_SIZE 0x08000000
+
+typedef struct K230HiSysState K230HiSysState;
 
 /* SSI GPIO output ordering differs from RISR/ISR bit ordering. */
 typedef enum K230DwSsiIrq {
@@ -37,17 +46,27 @@ typedef enum K230DwSsiPhase {
     K230_DW_SSI_PHASE_IDLE,
 
     /*
+     * RX-only has consumed its dummy frame and is generating NDF + 1
+     * receive frames. It pauses while the RX FIFO is full.
      */
     K230_DW_SSI_PHASE_RX_ONLY,
 
     /*
+     * EEPROM_READ command phase. The RX value for command frames is
+     * discarded.
      */
     K230_DW_SSI_PHASE_EEPROM_COMMAND,
 
     /*
+     * EEPROM_READ data phase. Dummy frames generate the NDF + 1 receive
+     * clocks after the command has completed.
      */
     K230_DW_SSI_PHASE_EEPROM_DATA,
 
+    /*
+     * Enhanced transfers use the same FIFOs. These phases describe the
+     * instruction, address, mode, dummy, and data portions of one transfer.
+     */
     K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION,
     K230_DW_SSI_PHASE_ENHANCED_ADDRESS,
     K230_DW_SSI_PHASE_ENHANCED_MODE,
@@ -55,6 +74,9 @@ typedef enum K230DwSsiPhase {
     K230_DW_SSI_PHASE_ENHANCED_DATA,
 } K230DwSsiPhase;
 
+/*
+ * This describes a controller transaction, not a flash opcode state machine.
+ */
 typedef struct K230DwSsiEnhancedCommand {
     uint32_t instruction;
     uint32_t address;
@@ -74,7 +96,11 @@ struct K230DwSsiState {
     SysBusDevice parent_obj;
 
     MemoryRegion mmio;
+    /* Second SysBus MMIO region: the memory-mapped SPI NOR read window. */
+    MemoryRegion xip;
     SSIBus *spi;
+    /* Only spi0 uses this region; HI_SYS XIP_EN gates all accesses. */
+    K230HiSysState *hi_sys;
     qemu_irq *cs_lines;
     qemu_irq irqs[K230_DW_SSI_IRQ_COUNT];
 
@@ -96,5 +122,6 @@ struct K230DwSsiState {
 
 uint32_t k230_dw_ssi_get_spi_mode(const K230DwSsiState *s);
 bool k230_dw_ssi_is_sleeping(const K230DwSsiState *s);
+void k230_dw_ssi_set_hi_sys(K230DwSsiState *s, K230HiSysState *hi_sys);
 
 #endif /* HW_SSI_K230_DW_SSI_H */

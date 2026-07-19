@@ -1,6 +1,11 @@
 /*
  * K230 HI_SYS_CONFIG SSI wrapper
  *
+ * Copyright (c) 2026 Kangjie Huang <flamboyant.h.01@gmail.com>
+ *
+ * K230 Technical Reference Manual V0.3.1 (2024-11-18):
+ * https://github.com/revyos/external-docs/blob/master/K230_Technical_Reference_Manual_V0.3.1_20241118.pdf
+ *
  * SSI_CTRL is a SoC wrapper register and must not be folded into any DWC
  * SSI controller's DR2 register at base + 0x068.
  *

@@ -1,5 +1,10 @@
 /*
- * K230 DWC SSI compatible SPI/QSPI controller
+ * Kendryte K230 DesignWare SSI
+ *
+ * Copyright (c) 2026 Kangjie Huang <flamboyant.h.01@gmail.com>
+ *
+ * K230 Technical Reference Manual V0.3.1 (2024-11-18):
+ * https://github.com/revyos/external-docs/blob/master/K230/en-us/K230_Technical_Reference_Manual_V0.3.1_20241118.pdf
  *
  * This model implements the K230 register, FIFO, and SSI transfer paths.
  *
@@ -10,6 +15,7 @@
 #include "hw/core/registerfields.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
+#include "hw/misc/k230_hi_sys.h"
 #include "hw/ssi/k230_dw_ssi.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -257,8 +263,7 @@ REG32(XIP_WRITE_CTRL, 0x148)
 #define K230_DW_SSI_AXIAR0_WRITABLE_MASK R_AXIAR0_AXIAR_0_31_MASK
 #define K230_DW_SSI_AXIAR1_WRITABLE_MASK R_AXIAR1_AXIAR_32_63_MASK
 
-/*
- */
+/* SSI GPIO output ordering differs from RISR bit ordering. */
 static const uint32_t k230_dw_ssi_irq_status_mask[
     K230_DW_SSI_IRQ_COUNT] = {
     [K230_DW_SSI_IRQ_TXE] = R_RISR_TXEIR_MASK,
@@ -272,8 +277,7 @@ static const uint32_t k230_dw_ssi_irq_status_mask[
     [K230_DW_SSI_IRQ_AXIE] = R_RISR_AXIER_MASK,
 };
 
-/*
- */
+/* Saved registers are masked on reset and every guest write. */
 static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
                                      uint32_t value, uint32_t mask)
 {
@@ -290,8 +294,7 @@ static uint32_t k230_dw_ssi_irq_raw_status(K230DwSsiState *s)
     uint32_t rx_threshold =
         FIELD_EX32(s->regs[R_RXFTLR], RXFTLR, RFT);
 
-    /*
-     */
+    /* TXE and RXF are derived from FIFO occupancy and threshold fields. */
     if (tx_used <= tx_threshold) {
         status |= R_RISR_TXEIR_MASK;
     }
@@ -316,8 +319,7 @@ static uint32_t k230_dw_ssi_irq_read_clear(K230DwSsiState *s,
 {
     uint32_t active = s->irq_latched & clear_mask;
 
-    /*
-     */
+    /* Read-clear registers affect only latched causes, never TXE or RXF. */
     s->irq_latched &= ~clear_mask;
     k230_dw_ssi_update_irq(s);
     return !!active;
@@ -325,8 +327,7 @@ static uint32_t k230_dw_ssi_irq_read_clear(K230DwSsiState *s,
 
 static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
 {
-    /*
-     */
+    /* DFS encodes frame width minus one. */
     unsigned int bits = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, DFS) + 1;
 
     return bits == 32 ? UINT32_MAX : MAKE_64BIT_MASK(0, bits);
@@ -334,8 +335,6 @@ static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
 
 static bool k230_dw_ssi_enabled(K230DwSsiState *s)
 {
-    /*
-     */
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
 
@@ -347,6 +346,12 @@ uint32_t k230_dw_ssi_get_spi_mode(const K230DwSsiState *s)
 bool k230_dw_ssi_is_sleeping(const K230DwSsiState *s)
 {
     return s->sleep_status;
+}
+
+void k230_dw_ssi_set_hi_sys(K230DwSsiState *s, K230HiSysState *hi_sys)
+{
+    /* SSI only queries the XIP gate; HI_SYS owns its register semantics. */
+    s->hi_sys = hi_sys;
 }
 
 static void k230_dw_ssi_deselect(K230DwSsiState *s)
@@ -387,6 +392,7 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
         return;
     }
 
+    /* This profile does not support broadcast chip select. */
     if (ser & (ser - 1)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: multiple chip selects enabled: 0x%x\n",
@@ -400,18 +406,15 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
 
 static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
 {
-    /*
-     */
+    /* Deassert CS and discard incomplete controller state. */
     k230_dw_ssi_deselect(s);
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
 
-    /*
-     */
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
-    k230_dw_ssi_update_irq(s);
     memset(&s->enhanced, 0, sizeof(s->enhanced));
+    k230_dw_ssi_update_irq(s);
 }
 
 static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
@@ -420,8 +423,6 @@ static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
     uint32_t rx_used = fifo32_num_used(&s->rx_fifo);
     uint32_t sr = 0;
 
-    /*
-     */
     sr = FIELD_DP32(sr, SR, BUSY, s->phase != K230_DW_SSI_PHASE_IDLE);
     sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
     sr = FIELD_DP32(sr, SR, TFE, tx_used == 0);
@@ -436,35 +437,24 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s);
 
 static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
 {
-    /*
-     */
     if (!k230_dw_ssi_enabled(s)) {
         return;
     }
 
     if (fifo32_is_full(&s->tx_fifo)) {
-        /*
-         */
+        /* Discard overflow writes and latch TXO. */
         s->irq_latched |= R_RISR_TXOIR_MASK;
         k230_dw_ssi_update_irq(s);
         return;
     }
 
-    /*
-     */
     fifo32_push(&s->tx_fifo, tx);
 
-    /*
-     */
     k230_dw_ssi_run_transfer(s);
 
     k230_dw_ssi_update_irq(s);
 }
 
-/*
- *
- *
- */
 static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
                                         uint32_t tx)
 {
@@ -474,7 +464,9 @@ static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
     tx &= mask;
 
     if (FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SRL)) {
+        rx = tx;
     } else {
+        rx = ssi_transfer(s->spi, tx);
     }
 
     return rx & mask;
@@ -482,9 +474,6 @@ static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
 
 static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
 {
-    /*
-     *
-     */
     uint32_t ctrlr0 = s->regs[R_CTRLR0];
     uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
     uint32_t spi_frf;
@@ -547,10 +536,6 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
 
 static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
 {
-    /*
-     *
-     *
-     */
     uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     uint32_t inst_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, INST_L);
     uint32_t addr_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, ADDR_L);
@@ -582,8 +567,6 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
 
     required_items = (inst_bits != 0) + (addr_bits != 0);
 
-    /*
-     */
     if (fifo32_num_used(&s->tx_fifo) < required_items) {
         return false;
     }
@@ -632,6 +615,171 @@ static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
     }
 }
 
+static bool k230_dw_ssi_xip_config_supported(K230DwSsiState *s)
+{
+    uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
+    uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
+    uint32_t required_lines;
+
+    switch (spi_frf) {
+    case 0:
+        required_lines = 1;
+        break;
+    case 1:
+        required_lines = 2;
+        break;
+    case 2:
+        required_lines = 4;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: XIP does not support SPI_FRF=%u\n",
+                      DEVICE(s)->canonical_path, spi_frf);
+        return false;
+    }
+
+    if (required_lines > s->max_lines ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE) > 2) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: unsupported XIP line or transfer type\n",
+                      DEVICE(s)->canonical_path);
+        return false;
+    }
+
+    if (FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_DDR_EN) ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_DDR_EN) ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_EN) ||
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_SIG_EN)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: XIP DDR/RXDS mode is unsupported\n",
+                      DEVICE(s)->canonical_path);
+        return false;
+    }
+
+    return true;
+}
+
+static bool k230_dw_ssi_prepare_xip_command(K230DwSsiState *s,
+                                             hwaddr address,
+                                             K230DwSsiEnhancedCommand *command)
+{
+    uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
+    uint32_t inst_l = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_L);
+    uint32_t addr_l = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, ADDR_L);
+    uint32_t mode_bits = 0;
+
+    command->instruction_bits =
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, XIP_INST_EN) && inst_l ?
+        1U << (inst_l + 1) : 0;
+    command->address_bits = addr_l << 2;
+    if (command->address_bits > 32) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: unsupported XIP address length %u bits\n",
+                      DEVICE(s)->canonical_path, command->address_bits);
+        return false;
+    }
+
+    command->mode_bits_enabled =
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, XIP_MD_BIT_EN);
+    if (command->mode_bits_enabled) {
+        uint32_t mode_length_encoding =
+            FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, XIP_MBL);
+
+        mode_bits = 1U << (mode_length_encoding + 1);
+    }
+
+    command->mode_bits = mode_bits;
+    command->instruction = s->regs[R_XIP_INCR_INST] &
+        (uint32_t)MAKE_64BIT_MASK(0, command->instruction_bits);
+    command->address = (uint32_t)address &
+        (uint32_t)MAKE_64BIT_MASK(0, command->address_bits);
+    command->mode = s->regs[R_XIP_MODE_BITS] &
+        (uint32_t)MAKE_64BIT_MASK(0, command->mode_bits);
+    command->wait_cycles =
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, WAIT_CYCLES);
+    command->spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
+    command->trans_type =
+        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE);
+
+    return true;
+}
+
+static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr address,
+                                      unsigned int size)
+{
+    K230DwSsiState *s = K230_DW_SSI(opaque);
+    K230DwSsiEnhancedCommand command = { 0 };
+    uint64_t value = 0;
+
+    if (!s->hi_sys || !k230_hi_sys_xip_enabled(s->hi_sys)) {
+        return 0;
+    }
+
+    if (!k230_dw_ssi_xip_config_supported(s) ||
+        !k230_dw_ssi_prepare_xip_command(s, address, &command)) {
+        return 0;
+    }
+
+    if (s->active_cs >= 0 || s->phase != K230_DW_SSI_PHASE_IDLE) {
+        k230_dw_ssi_abort_transfer(s);
+    }
+
+    k230_dw_ssi_select(s, 0);
+    if (s->active_cs != 0) {
+        return 0;
+    }
+
+    if (command.instruction_bits != 0) {
+        k230_dw_ssi_send_enhanced_field(s, command.instruction,
+                                         command.instruction_bits);
+    }
+    if (command.address_bits != 0) {
+        k230_dw_ssi_send_enhanced_field(s, command.address,
+                                         command.address_bits);
+    }
+    if (command.mode_bits_enabled) {
+        k230_dw_ssi_send_enhanced_field(s, command.mode,
+                                         command.mode_bits);
+    }
+
+    for (uint32_t i = 0; i < command.wait_cycles; i++) {
+        ssi_transfer(s->spi, 0);
+    }
+
+    for (unsigned int i = 0; i < size; i++) {
+        value |= (uint64_t)(ssi_transfer(s->spi, 0) & 0xff) << (8 * i);
+    }
+
+    k230_dw_ssi_deselect(s);
+    return value;
+}
+
+static void k230_dw_ssi_xip_write(void *opaque, hwaddr address,
+                                   uint64_t value, unsigned int size)
+{
+    K230DwSsiState *s = K230_DW_SSI(opaque);
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "%s: XIP write at 0x%" HWADDR_PRIx " is unsupported\n",
+                  DEVICE(s)->canonical_path, address);
+}
+
+static const MemoryRegionOps k230_dw_ssi_xip_ops = {
+    .read = k230_dw_ssi_xip_read,
+    .write = k230_dw_ssi_xip_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+    },
+    .impl = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+    },
+};
+
 static void k230_dw_ssi_run_enhanced_rx_data(K230DwSsiState *s)
 {
     while (!fifo32_is_full(&s->rx_fifo) &&
@@ -659,11 +807,6 @@ static void k230_dw_ssi_run_enhanced_tx_data(K230DwSsiState *s)
 
 static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
 {
-    /*
-     *
-     *   instruction -> address -> mode -> dummy -> data
-     *
-     */
     if (s->phase == K230_DW_SSI_PHASE_IDLE) {
         if (!k230_dw_ssi_enhanced_config_supported(s) ||
             !k230_dw_ssi_prepare_enhanced_command(s)) {
@@ -741,10 +884,7 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
     tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
 
     switch (tmod) {
-    case K230_DW_SSI_TMOD_TR: /* TX_AND_RX */
-        /*
-         *
-         */
+    case K230_DW_SSI_TMOD_TR:
         while (!fifo32_is_empty(&s->tx_fifo)) {
             uint32_t tx = fifo32_pop(&s->tx_fifo);
             uint32_t rx = k230_dw_ssi_send_frame(s, tx);
@@ -759,78 +899,70 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             }
         }
         break;
-    case K230_DW_SSI_TMOD_TO: /* TX_ONLY */
-        /*
-         *
-         */
+    case K230_DW_SSI_TMOD_TO:
         while (!fifo32_is_empty(&s->tx_fifo)) {
             uint32_t tx = fifo32_pop(&s->tx_fifo);
             k230_dw_ssi_send_frame(s, tx);
         }
         break;
-    case K230_DW_SSI_TMOD_RO: /* RX_ONLY */
-        /*
-         *
-         *
-         */
+    case K230_DW_SSI_TMOD_RO:
         switch (s->phase) {
         case K230_DW_SSI_PHASE_IDLE:
-                if (fifo32_is_empty(&s->tx_fifo)) {
-                    break;
-                }
-                fifo32_pop(&s->tx_fifo);
-                s->phase = K230_DW_SSI_PHASE_RX_ONLY;
-                s->remaining_frames =
-                    FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
-
-        case K230_DW_SSI_PHASE_RX_ONLY:
-                while (!fifo32_is_full(&s->rx_fifo) &&
-                       s->remaining_frames > 0) {
-                    uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
-                    fifo32_push(&s->rx_fifo, rx);
-                    s->remaining_frames--;
-                }
-                if (s->remaining_frames == 0) {
-                    s->phase = K230_DW_SSI_PHASE_IDLE;
-                }
+            if (fifo32_is_empty(&s->tx_fifo)) {
                 break;
+            }
+            fifo32_pop(&s->tx_fifo);
+            s->phase = K230_DW_SSI_PHASE_RX_ONLY;
+            s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
+                                              NDF) + 1;
+            /* Fall through. */
+        case K230_DW_SSI_PHASE_RX_ONLY:
+            while (!fifo32_is_full(&s->rx_fifo) &&
+                   s->remaining_frames > 0) {
+                uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+
+                fifo32_push(&s->rx_fifo, rx);
+                s->remaining_frames--;
+            }
+            if (s->remaining_frames == 0) {
+                s->phase = K230_DW_SSI_PHASE_IDLE;
+            }
+            break;
         }
         break;
-    case K230_DW_SSI_TMOD_EEPROM_READ: /* EEPROM_READ */
-        /*
-         *
-         */
+    case K230_DW_SSI_TMOD_EEPROM_READ:
         switch (s->phase) {
         case K230_DW_SSI_PHASE_IDLE:
-                if (!fifo32_is_empty(&s->tx_fifo)) {
-                    s->phase = K230_DW_SSI_PHASE_EEPROM_COMMAND;
-                }
-                } else {
-                    break;
-                }
-        case K230_DW_SSI_PHASE_EEPROM_COMMAND:
-                if (fifo32_is_empty(&s->tx_fifo)) {
-                    break;
-                }
-                while (!fifo32_is_empty(&s->tx_fifo)) {
-                    uint32_t tx = fifo32_pop(&s->tx_fifo);
-                    k230_dw_ssi_send_frame(s, tx);
-                }
-                s->phase = K230_DW_SSI_PHASE_EEPROM_DATA;
-                s->remaining_frames =
-                    FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
-
-        case K230_DW_SSI_PHASE_EEPROM_DATA:
-                while (!fifo32_is_full(&s->rx_fifo) &&
-                       s->remaining_frames > 0) {
-                    uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
-                    fifo32_push(&s->rx_fifo, rx);
-                    s->remaining_frames--;
-                }
-                if (s->remaining_frames == 0) {
-                    s->phase = K230_DW_SSI_PHASE_IDLE;
-                }
+            if (fifo32_is_empty(&s->tx_fifo)) {
                 break;
+            }
+            s->phase = K230_DW_SSI_PHASE_EEPROM_COMMAND;
+            /* Fall through. */
+        case K230_DW_SSI_PHASE_EEPROM_COMMAND:
+            if (fifo32_is_empty(&s->tx_fifo)) {
+                break;
+            }
+            while (!fifo32_is_empty(&s->tx_fifo)) {
+                uint32_t tx = fifo32_pop(&s->tx_fifo);
+
+                k230_dw_ssi_send_frame(s, tx);
+            }
+            s->phase = K230_DW_SSI_PHASE_EEPROM_DATA;
+            s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
+                                              NDF) + 1;
+            /* Fall through. */
+        case K230_DW_SSI_PHASE_EEPROM_DATA:
+            while (!fifo32_is_full(&s->rx_fifo) &&
+                   s->remaining_frames > 0) {
+                uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+
+                fifo32_push(&s->rx_fifo, rx);
+                s->remaining_frames--;
+            }
+            if (s->remaining_frames == 0) {
+                s->phase = K230_DW_SSI_PHASE_IDLE;
+            }
+            break;
         }
         break;
     default:
@@ -866,8 +998,6 @@ static bool k230_dw_ssi_is_razwi(hwaddr addr)
 
 static bool k230_dw_ssi_write_requires_disabled(hwaddr addr)
 {
-    /*
-     */
     switch (addr) {
     case A_CTRLR0:
     case A_CTRLR1:
@@ -893,8 +1023,6 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
             s->irq_latched |= R_RISR_RXUIR_MASK;
         }
 
-        /*
-         */
         k230_dw_ssi_run_transfer(s);
         k230_dw_ssi_update_irq(s);
         return value;
@@ -1032,8 +1160,6 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
 
         s->sleep_status = false;
         k230_dw_ssi_update_cs(s);
-        /*
-         */
         k230_dw_ssi_run_transfer(s);
         k230_dw_ssi_update_irq(s);
         break;
@@ -1185,8 +1311,8 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     fifo32_reset(&s->rx_fifo);
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
-    s->irq_latched = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
+    s->irq_latched = 0;
     s->sleep_status = false;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
@@ -1269,6 +1395,11 @@ static void k230_dw_ssi_init(Object *obj)
     memory_region_init_io(&s->mmio, obj, &k230_dw_ssi_ops, s,
                           TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->mmio);
+
+    memory_region_init_io(&s->xip, obj, &k230_dw_ssi_xip_ops, s,
+                          TYPE_K230_DW_SSI ".xip",
+                          K230_DW_SSI_XIP_WINDOW_SIZE);
+    sysbus_init_mmio(sbd, &s->xip);
 
     for (int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
         sysbus_init_irq(sbd, &s->irqs[i]);
