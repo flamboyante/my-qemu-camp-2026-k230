@@ -19,6 +19,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(K230DwSsiState, K230_DW_SSI)
 #define K230_DW_SSI_REGS_SIZE 0x14c
 #define K230_DW_SSI_NUM_REGS \
     (K230_DW_SSI_REGS_SIZE / sizeof(uint32_t))
+/* Patch 9：spi0 的 Flash memory-mapped read window（128 MiB）。 */
+#define K230_DW_SSI_XIP_WINDOW_SIZE 0x08000000
+
+typedef struct K230HiSysState K230HiSysState;
 
 /*
  * LEARNING(P6): 外部 IRQ 顺序来自 K230 SSI 集成接口，不等同于
@@ -94,7 +98,11 @@ struct K230DwSsiState {
     SysBusDevice parent_obj;
 
     MemoryRegion mmio;
+    /* 第二个 SysBus MMIO：不是寄存器，而是 guest 读取 Flash 的 XIP 窗口。 */
+    MemoryRegion xip;
     SSIBus *spi;
+    /* 仅 spi0 设置；HI_SYS 的 XIP_EN 是这个窗口的总开关。 */
+    K230HiSysState *hi_sys;
     qemu_irq *cs_lines;
     qemu_irq irqs[K230_DW_SSI_IRQ_COUNT];
 
@@ -117,5 +125,6 @@ struct K230DwSsiState {
 
 uint32_t k230_dw_ssi_get_spi_mode(const K230DwSsiState *s);
 bool k230_dw_ssi_is_sleeping(const K230DwSsiState *s);
+void k230_dw_ssi_set_hi_sys(K230DwSsiState *s, K230HiSysState *hi_sys);
 
 #endif /* HW_SSI_K230_DW_SSI_H */

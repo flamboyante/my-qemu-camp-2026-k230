@@ -12,6 +12,7 @@
 #include "k230-dw-ssi-test.h"
 
 #define FLASH_CMD_JEDEC     0x9f
+#define FLASH_CMD_READ      0x03
 #define FLASH_CMD_FAST_READ 0x0b
 #define FLASH_CMD_READ4     0x13
 #define FLASH_CMD_QUAD_IO   0xeb
@@ -26,6 +27,18 @@ static void enable_xip(QTestState *qts)
                     ==, K230_SSI_CTRL_XIP_EN);
 }
 
+static void configure_xip_read(QTestState *qts, uint8_t opcode,
+                               unsigned int address_bits)
+{
+    uint32_t spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(0) |
+                          K230_SSI_SPI_CTRLR0_ADDR_L(address_bits) |
+                          K230_SSI_SPI_CTRLR0_INST_L_8 |
+                          K230_SSI_SPI_CTRLR0_XIP_INST_EN;
+
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_XIP_INCR_INST, opcode);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
+}
+
 static void test_xip_enable_gate(void)
 {
     K230SsiFlashImage image;
@@ -33,6 +46,7 @@ static void test_xip_enable_gate(void)
 
     g_assert_cmphex(qtest_readb(qts, K230_FLASH_BASE +
                                 K230_SSI_FLASH_PATTERN_ADDR), ==, 0);
+    configure_xip_read(qts, FLASH_CMD_READ, 24);
     enable_xip(qts);
     g_assert_cmphex(qtest_readb(qts, K230_FLASH_BASE +
                                 K230_SSI_FLASH_PATTERN_ADDR), ==, 0xa5);
@@ -47,6 +61,7 @@ static void test_xip_read_widths(void)
     QTestState *qts = k230_ssi_start_with_flash(&image);
     uint64_t addr = K230_FLASH_BASE + K230_SSI_FLASH_PATTERN_ADDR;
 
+    configure_xip_read(qts, FLASH_CMD_READ, 24);
     enable_xip(qts);
     g_assert_cmphex(qtest_readb(qts, addr), ==, 0xa5);
     g_assert_cmphex(qtest_readw(qts, addr), ==, 0x5aa5);
@@ -67,7 +82,8 @@ static void test_xip_address_width_comes_from_spi_ctrlr0(void)
                     FLASH_CMD_READ4);
     spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(0) |
                  K230_SSI_SPI_CTRLR0_ADDR_L(32) |
-                 K230_SSI_SPI_CTRLR0_INST_L_8;
+                 K230_SSI_SPI_CTRLR0_INST_L_8 |
+                 K230_SSI_SPI_CTRLR0_XIP_INST_EN;
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
     enable_xip(qts);
 
@@ -90,9 +106,10 @@ static void test_xip_dummy_and_mode_bits_come_from_registers(void)
     spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(1) |
                  K230_SSI_SPI_CTRLR0_ADDR_L(24) |
                  K230_SSI_SPI_CTRLR0_INST_L_8 |
+                 K230_SSI_SPI_CTRLR0_XIP_INST_EN |
                  K230_SSI_SPI_CTRLR0_XIP_MD_EN |
                  K230_SSI_SPI_CTRLR0_XIP_MBL_8 |
-                 K230_SSI_SPI_CTRLR0_WAIT(8);
+                 K230_SSI_SPI_CTRLR0_WAIT(4);
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
     enable_xip(qts);
 
@@ -111,6 +128,7 @@ static void test_pio_and_xip_share_flash_without_stale_cs(void)
     uint8_t tx[] = { FLASH_CMD_JEDEC, 0 };
     uint8_t rx[ARRAY_SIZE(tx)];
 
+    configure_xip_read(qts, FLASH_CMD_READ, 24);
     enable_xip(qts);
     g_assert_cmphex(qtest_readb(qts, K230_FLASH_BASE +
                                 K230_SSI_FLASH_PATTERN_ADDR), ==, 0xa5);

@@ -267,6 +267,11 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
         k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
                             &s->dw_ssi[route->ssi_index]);
+        if (logical_index == 0) {
+            /* TRM 的 XIP Flash window 只属于逻辑 spi0。 */
+            k230_dw_ssi_set_hi_sys(&s->dw_ssi[route->ssi_index],
+                                   &s->hi_sys);
+        }
     }
 
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->hi_sys), errp)) {
@@ -289,6 +294,9 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
                     memmap[K230_DEV_QSPI1].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
+    /* 以 SPI 控制器的第二个 region 取代原来的 unimplemented flash 洞。 */
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 1,
+                    memmap[K230_DEV_FLASH].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->hi_sys), 0,
                     memmap[K230_DEV_HI_SYS_CFG].base);
 
@@ -438,8 +446,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("ddrc_cfg", memmap[K230_DEV_DDRC_CFG].base,
                                 memmap[K230_DEV_DDRC_CFG].size);
 
-    create_unimplemented_device("flash", memmap[K230_DEV_FLASH].base,
-                                memmap[K230_DEV_FLASH].size);
 }
 
 static void k230_soc_class_init(ObjectClass *oc, const void *data)
