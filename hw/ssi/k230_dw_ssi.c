@@ -720,6 +720,19 @@ static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
     }
 }
 
+static uint32_t k230_dw_ssi_dummy_bytes(uint32_t spi_frf,
+                                         uint32_t trans_type,
+                                         uint32_t wait_cycles)
+{
+    uint32_t lines = 1;
+
+    if (trans_type != 0) {
+        lines = spi_frf == 1 ? 2 : 4;
+    }
+
+    return DIV_ROUND_UP(wait_cycles * lines, 8);
+}
+
 static bool k230_dw_ssi_xip_config_supported(K230DwSsiState *s)
 {
     uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
@@ -862,8 +875,11 @@ static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr address,
                                          command.mode_bits);
     }
 
-    /* m25p80 的 dummy cycle 契约与 Patch 5 的增强 PIO 路径相同。 */
-    for (uint32_t i = 0; i < command.wait_cycles; i++) {
+    /* m25p80 consumes byte-wide representations of the dummy clocks. */
+    uint32_t dummy_bytes = k230_dw_ssi_dummy_bytes(
+        command.spi_frf, command.trans_type, command.wait_cycles);
+
+    for (uint32_t i = 0; i < dummy_bytes; i++) {
         ssi_transfer(s->spi, 0);
     }
 
@@ -977,7 +993,11 @@ static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
     }
 
     if (s->phase == K230_DW_SSI_PHASE_ENHANCED_DUMMY) {
-        for (uint32_t i = 0; i < s->enhanced.wait_cycles; i++) {
+        uint32_t dummy_bytes = k230_dw_ssi_dummy_bytes(
+            s->enhanced.spi_frf, s->enhanced.trans_type,
+            s->enhanced.wait_cycles);
+
+        for (uint32_t i = 0; i < dummy_bytes; i++) {
             ssi_transfer(s->spi, 0);
         }
         s->phase = K230_DW_SSI_PHASE_ENHANCED_DATA;
