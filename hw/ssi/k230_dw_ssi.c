@@ -31,6 +31,7 @@
 #define K230_DW_SSI_VERSION                 0x3130332a
 
 #define K230_DW_SSI_IRQ_VALID_MASK          0x000009bf
+#define K230_DW_SSI_PIO_TX_BATCH             64
 
 enum {
     K230_DW_SSI_TMOD_TR,
@@ -1066,18 +1067,26 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             }
         }
         break;
-    case K230_DW_SSI_TMOD_TO: /* TX_ONLY */
-        /*
-         * LEARNING(P3-4): 消费 TX FIFO，但丢弃线路返回值。
-         *
-         * LEARNING(P3): SPI 线路本身仍会同时返回数据；TX_ONLY 的含义
-         * 是控制器不把返回值写入 RX FIFO，而不是“线路没有 RX”。
-         */
-        while (!fifo32_is_empty(&s->tx_fifo)) {
+    case K230_DW_SSI_TMOD_TO: { /* TX_ONLY */
+        unsigned int frames = 0;
+
+        if (fifo32_is_empty(&s->tx_fifo)) {
+            s->phase = K230_DW_SSI_PHASE_IDLE;
+            break;
+        }
+
+        s->phase = K230_DW_SSI_PHASE_STANDARD_TX_ONLY;
+        while (!fifo32_is_empty(&s->tx_fifo) &&
+               frames < K230_DW_SSI_PIO_TX_BATCH) {
             uint32_t tx = fifo32_pop(&s->tx_fifo);
             k230_dw_ssi_send_frame(s, tx);
+            frames++;
+        }
+        if (fifo32_is_empty(&s->tx_fifo)) {
+            s->phase = K230_DW_SSI_PHASE_IDLE;
         }
         break;
+    }
     case K230_DW_SSI_TMOD_RO: /* RX_ONLY */
         /*
          * LEARNING(P3-5): 一个 dummy DR 启动 NDF + 1 个接收帧。
@@ -1268,12 +1277,18 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case A_TXFLR:
         value = fifo32_num_used(&s->tx_fifo);
+        if (s->phase == K230_DW_SSI_PHASE_STANDARD_TX_ONLY) {
+            k230_dw_ssi_run_transfer(s);
+        }
         break;
     case A_RXFLR:
         value = fifo32_num_used(&s->rx_fifo);
         break;
     case A_SR:
         value = k230_dw_ssi_status(s);
+        if (s->phase == K230_DW_SSI_PHASE_STANDARD_TX_ONLY) {
+            k230_dw_ssi_run_transfer(s);
+        }
         break;
     case A_ISR:
         value = k230_dw_ssi_irq_raw_status(s) & s->regs[R_IMR] &
@@ -1378,13 +1393,20 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         k230_dw_ssi_write_masked(s, R_MWCR, value,
                                  K230_DW_SSI_MWCR_WRITABLE_MASK);
         break;
-    case A_SER:
+    case A_SER: {
+        uint32_t old_ser = s->regs[R_SER];
+
         /* SER 选择后，已预填的 TX FIFO 首次具备线路发送条件。 */
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
         k230_dw_ssi_update_cs(s);
+        if (old_ser && !s->regs[R_SER] &&
+            s->phase == K230_DW_SSI_PHASE_STANDARD_TX_ONLY) {
+            k230_dw_ssi_abort_transfer(s);
+        }
         k230_dw_ssi_run_transfer(s);
         k230_dw_ssi_update_irq(s);
         break;
+    }
     case A_BAUDR:
         k230_dw_ssi_write_masked(s, R_BAUDR, value,
                                  K230_DW_SSI_BAUDR_WRITABLE_MASK);

@@ -258,6 +258,58 @@ static void test_page_program_and_readback(void)
     k230_ssi_flash_image_clear(&image);
 }
 
+static void test_standard_native_cs_refill(void)
+{
+    K230SsiFlashImage image;
+    QTestState *qts = k230_ssi_start_with_flash(&image);
+    uint8_t payload[K230_SSI_FIFO_DEPTH];
+    uint8_t actual[sizeof(payload)];
+    uint32_t addr = K230_SSI_FLASH_PROGRAM_ADDR;
+    size_t i;
+
+    for (i = 0; i < sizeof(payload); i++) {
+        payload[i] = i;
+    }
+
+    flash_write_enable(qts);
+    k230_ssi_configure(qts, K230_SPI0_BASE, K230_SSI_TMOD_TO, 8, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, 0);
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SSIENR, 1);
+
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, FLASH_CMD_PP);
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, addr >> 16);
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, addr >> 8);
+    k230_ssi_write_frame(qts, K230_SPI0_BASE, addr);
+    for (i = 0; i < K230_SSI_FIFO_DEPTH - 4; i++) {
+        k230_ssi_write_frame(qts, K230_SPI0_BASE, payload[i]);
+    }
+
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SER, BIT(0));
+    g_assert_cmpuint(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_TXFLR),
+                     >, 0);
+    g_assert_true(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_SR) &
+                  K230_SSI_SR_BUSY);
+
+    for (; i < sizeof(payload); i++) {
+        k230_ssi_write_frame(qts, K230_SPI0_BASE, payload[i]);
+    }
+    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_TXFLR,
+                       UINT32_MAX, 0);
+    k230_ssi_wait_mask(qts, K230_SPI0_BASE, K230_SSI_SR,
+                       K230_SSI_SR_BUSY, 0);
+    k230_ssi_disable(qts, K230_SPI0_BASE);
+
+    flash_wait_ready(qts);
+    flash_read(qts, FLASH_CMD_READ, addr, 3, 0, actual,
+               sizeof(actual) / 2);
+    flash_read(qts, FLASH_CMD_READ, addr + sizeof(actual) / 2, 3, 0,
+               actual + sizeof(actual) / 2, sizeof(actual) / 2);
+    g_assert_cmpmem(actual, sizeof(actual), payload, sizeof(payload));
+
+    qtest_quit(qts);
+    k230_ssi_flash_image_clear(&image);
+}
+
 static void test_sector_erase_and_readback(void)
 {
     K230SsiFlashImage image;
@@ -389,6 +441,8 @@ void k230_ssi_register_flash_tests(void)
                    test_flash_read_4byte_address);
     qtest_add_func("/k230-dw-ssi/flash/page-program",
                    test_page_program_and_readback);
+    qtest_add_func("/k230-dw-ssi/flash/standard-native-cs-refill",
+                   test_standard_native_cs_refill);
     qtest_add_func("/k230-dw-ssi/flash/sector-erase",
                    test_sector_erase_and_readback);
     qtest_add_func("/k230-dw-ssi/flash/cs-restarts-command",

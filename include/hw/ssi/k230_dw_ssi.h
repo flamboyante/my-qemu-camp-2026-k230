@@ -63,6 +63,9 @@ typedef enum K230DwSsiPhase {
      */
     K230_DW_SSI_PHASE_EEPROM_DATA,
 
+    /* Standard TX-only data remains queued for a later PIO pump. */
+    K230_DW_SSI_PHASE_STANDARD_TX_ONLY,
+
     /*
      * LEARNING(P5): Enhanced SPI 不是第二套 FIFO 引擎。以下阶段只描述
      * 同一条事务在 instruction/address/mode/dummy/data 间的推进位置。
