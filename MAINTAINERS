@@ -1824,9 +1824,11 @@ M: Chao Liu <chao.liu@processmission.com>
 L: qemu-riscv@nongnu.org
 S: Maintained
 F: docs/system/riscv/k230.rst
+F: hw/misc/k230_hi_sys.c
 F: hw/riscv/k230.c
 F: hw/ssi/k230_dw_ssi.c
 F: hw/watchdog/k230_wdt.c
+F: include/hw/misc/k230_hi_sys.h
 F: include/hw/riscv/k230.h
 F: include/hw/ssi/k230_dw_ssi.h
 F: include/hw/watchdog/k230_wdt.h
