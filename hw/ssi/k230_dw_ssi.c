@@ -744,6 +744,11 @@ static bool k230_dw_ssi_idma_ready(K230DwSsiState *s)
            fifo32_is_empty(&s->tx_fifo) && fifo32_is_empty(&s->rx_fifo);
 }
 
+static bool k230_dw_ssi_idma_enabled(const K230DwSsiState *s)
+{
+    return FIELD_EX32(s->regs[R_DMACR], DMACR, IDMAE);
+}
+
 static void k230_dw_ssi_idma_complete(K230DwSsiState *s)
 {
     s->idma_completed = true;
@@ -1365,6 +1370,13 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     uint32_t value = 0;
 
     if (k230_dw_ssi_is_dr(addr)) {
+        if (k230_dw_ssi_idma_enabled(s)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: DR read while internal DMA is enabled\n",
+                          DEVICE(s)->canonical_path);
+            return 0;
+        }
+
         if (!fifo32_is_empty(&s->rx_fifo)) {
             /* LEARNING(P3): DR0..DR35 都是同一个 RX FIFO 的别名。 */
             value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
@@ -1475,6 +1487,13 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     K230DwSsiState *s = K230_DW_SSI(opaque);
 
     if (k230_dw_ssi_is_dr(addr)) {
+        if (k230_dw_ssi_idma_enabled(s)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: DR write while internal DMA is enabled\n",
+                          DEVICE(s)->canonical_path);
+            return;
+        }
+
         k230_dw_ssi_push_tx(s, value);
         return;
     }
@@ -1523,8 +1542,11 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
          * LEARNING(P3): enable 不只是改变寄存器位，还可能让之前预填
          * 的 TX FIFO 首次具备发送条件，因此需要主动运行 pump。
          */
-        k230_dw_ssi_run_transfer(s);
-        k230_dw_ssi_try_idma(s);
+        if (k230_dw_ssi_idma_ready(s)) {
+            k230_dw_ssi_try_idma(s);
+        } else {
+            k230_dw_ssi_run_transfer(s);
+        }
         k230_dw_ssi_update_irq(s);
         break;
     }
@@ -1536,8 +1558,11 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         /* SER 选择后，已预填的 TX FIFO 首次具备线路发送条件。 */
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
         k230_dw_ssi_update_cs(s);
-        k230_dw_ssi_run_transfer(s);
-        k230_dw_ssi_try_idma(s);
+        if (k230_dw_ssi_idma_ready(s)) {
+            k230_dw_ssi_try_idma(s);
+        } else {
+            k230_dw_ssi_run_transfer(s);
+        }
         k230_dw_ssi_update_irq(s);
         break;
     case A_BAUDR:
@@ -1649,10 +1674,6 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         k230_dw_ssi_try_idma(s);
         break;
     case A_DONECR:
-        if (value & R_DONECR_DONECR_MASK) {
-            s->irq_latched &= ~R_RISR_DONER_MASK;
-            k230_dw_ssi_update_irq(s);
-        }
         break;
     case A_AXIECR:
         break;
