@@ -328,6 +328,16 @@ static bool k230_dw_ssi_enabled(const K230DwSsiState *s)
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
 
+uint32_t k230_dw_ssi_get_spi_mode(const K230DwSsiState *s)
+{
+    return FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
+}
+
+bool k230_dw_ssi_is_sleeping(const K230DwSsiState *s)
+{
+    return s->sleep_status;
+}
+
 static void k230_dw_ssi_deselect(K230DwSsiState *s)
 {
     if (s->active_cs < 0) {
@@ -640,6 +650,7 @@ static bool k230_dw_ssi_idma_ready(const K230DwSsiState *s)
 static void k230_dw_ssi_idma_end(K230DwSsiState *s, uint32_t cause)
 {
     s->regs[R_SSIENR] = 0;
+    s->sleep_status = true;
     s->phase = K230_DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
     k230_dw_ssi_deselect(s);
@@ -1166,9 +1177,11 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
         s->regs[R_SSIENR] = FIELD_DP32(0, SSIENR, SSIC_EN, new_enabled);
         if (!new_enabled) {
             k230_dw_ssi_abort_transfer(s);
+            s->sleep_status = true;
             return;
         }
 
+        s->sleep_status = false;
         k230_dw_ssi_update_cs(s);
         if (k230_dw_ssi_idma_enabled(s)) {
             k230_dw_ssi_try_idma(s);
@@ -1341,6 +1354,7 @@ static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
     s->irq_latched = 0;
     s->idma_completed_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
+    s->sleep_status = false;
 
     s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = K230_DW_SSI_SR_RESET;
@@ -1407,6 +1421,7 @@ static const VMStateDescription vmstate_k230_dw_ssi = {
         VMSTATE_UINT32(enhanced.tmod, K230DwSsiState),
         VMSTATE_BOOL(enhanced.mode_bits_enabled, K230DwSsiState),
         VMSTATE_INT32(active_cs, K230DwSsiState),
+        VMSTATE_BOOL(sleep_status, K230DwSsiState),
         VMSTATE_END_OF_LIST()
     },
 };
