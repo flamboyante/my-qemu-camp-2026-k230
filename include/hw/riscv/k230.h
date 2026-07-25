@@ -19,10 +19,13 @@
 #include "hw/misc/k230_ddr.h"
 #include "hw/riscv/riscv_hart.h"
 #include "hw/ssi/dw_ssi.h"
+#include "hw/char/k230_uart.h"
 #include "hw/watchdog/k230_wdt.h"
 #include "hw/misc/k230_rmu.h"
 
 #define C908_CPU_HARTID   (0)
+
+#define K230_UART_COUNT 5
 
 #define TYPE_RISCV_K230_SOC "riscv.k230.soc"
 #define RISCV_K230_SOC(obj) \
@@ -37,6 +40,7 @@ typedef struct K230SoCState {
 
     K230DDRCfgState ddr_cfg;
     K230DDRPhyState ddr_phy;
+    K230UartState uart[K230_UART_COUNT];
     K230WdtState wdt[2];
     DwSsiState dw_ssi[3];
     K230RmuState rmu;
@@ -143,8 +147,6 @@ enum {
     K230_SPI1_IRQ_BASE = 155,
     K230_SPI2_IRQ_BASE = 164,
 };
-
-#define K230_UART_COUNT 5
 
 /*
  * Integrates with the interrupt controller (PLIC),
