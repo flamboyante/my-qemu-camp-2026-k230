@@ -168,3 +168,4 @@ config K230
     select K230_TIMER
     select K230_IOMUX
     select K230_GSDMA
+    select K230_DECOMP_GZIP

@@ -25,6 +25,7 @@
 #include "hw/timer/k230_dwapb_timer.h"
 #include "hw/misc/k230_iomux.h"
 #include "hw/dma/k230_gsdma.h"
+#include "hw/misc/k230_decomp_gzip.h"
 
 #define C908_CPU_HARTID   (0)
 
@@ -50,6 +51,7 @@ typedef struct K230SoCState {
     K230TimerState timer;
     K230IomuxState iomux;
     K230GSDMAState gsdma;
+    K230DecompGzipState decomp_gzip;
     MemoryRegion sram;
     MemoryRegion bootrom;
 
