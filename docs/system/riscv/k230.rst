@@ -25,6 +25,7 @@ The ``k230`` machine supports the following devices:
 * Optional SPI NOR flash on spi0 CS0
 * K230 DDRC CFG and DDR PHY
 * K230 IOMUX register block
+* System Direct Memory Access (SDMA)
 
 Boot options
 ------------

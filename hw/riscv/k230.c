@@ -173,22 +173,19 @@ static void k230_soc_init(Object *obj)
     object_initialize_child(obj, "k230-qspi0", &s->dw_ssi[0],
                             TYPE_DW_SSI);
     object_initialize_child(obj, "k230-qspi1", &s->dw_ssi[1],
-                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
-                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-rmu",  &s->rmu,    TYPE_K230_RMU);
-
     for (int i = 0; i < K230_UART_COUNT; i++) {
         g_autofree char *name = g_strdup_printf("k230-uart%d", i);
         object_initialize_child(obj, name, &s->uart[i], TYPE_K230_UART);
     }
     object_initialize_child(obj, "k230-dwapb-timer", &s->timer,
                             TYPE_K230_TIMER);
-
     Clock *timer_clk = clock_new(OBJECT(s), "timer-clk");
     clock_set_hz(timer_clk, K230_APBTMR_DEFAULT_FREQ);
     qdev_connect_clock_in(DEVICE(&s->timer), "pclk", timer_clk);
     object_initialize_child(obj, "k230-iomux", &s->iomux, TYPE_K230_IOMUX);
+    object_initialize_child(obj, "k230-gsdma", &s->gsdma, TYPE_K230_GSDMA);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -356,11 +353,9 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
                     memmap[K230_DEV_QSPI1].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
-
     create_unimplemented_device("spi-flash-xip",
                                 memmap[K230_DEV_FLASH].base,
                                 memmap[K230_DEV_FLASH].size);
-
     create_unimplemented_device("hi_sys", memmap[K230_DEV_HI_SYS_CFG].base,
                                 memmap[K230_DEV_HI_SYS_CFG].size);
     /* RMU (reset management unit) */
@@ -374,6 +369,11 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     }
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->rmu), 0, memmap[K230_DEV_RMU].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->iomux), 0, memmap[K230_DEV_IOMUX].base);
+    /* Gsdma */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->gsdma), errp)) {
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->gsdma), 0, memmap[K230_DEV_GSDMA].base);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gsdma), 0,
+                       qdev_get_gpio_in(DEVICE(s->c908_plic), K230_GSDMA_IRQ));
 
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
@@ -389,9 +389,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("2d-engine.ai",
                                 memmap[K230_DEV_AI_2D_ENGINE].base,
                                 memmap[K230_DEV_AI_2D_ENGINE].size);
-
-    create_unimplemented_device("gsdma", memmap[K230_DEV_GSDMA].base,
-                                memmap[K230_DEV_GSDMA].size);
 
     create_unimplemented_device("dma", memmap[K230_DEV_DMA].base,
                                 memmap[K230_DEV_DMA].size);

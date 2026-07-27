@@ -24,6 +24,7 @@
 #include "hw/misc/k230_rmu.h"
 #include "hw/timer/k230_dwapb_timer.h"
 #include "hw/misc/k230_iomux.h"
+#include "hw/dma/k230_gsdma.h"
 
 #define C908_CPU_HARTID   (0)
 
@@ -48,6 +49,7 @@ typedef struct K230SoCState {
     K230RmuState rmu;
     K230TimerState timer;
     K230IomuxState iomux;
+    K230GSDMAState gsdma;
     MemoryRegion sram;
     MemoryRegion bootrom;
 
@@ -156,6 +158,7 @@ enum {
     K230_SPI0_IRQ_BASE = 146,
     K230_SPI1_IRQ_BASE = 155,
     K230_SPI2_IRQ_BASE = 164,
+    K230_GSDMA_IRQ  = 140,
 };
 
 /*
