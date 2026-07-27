@@ -453,3 +453,6 @@ k230_rmu_write(uint64_t offset, uint32_t value) "K230 RMU write: [0x%" PRIx64 "]
 k230_rmu_flush(uint64_t offset) "K230 RMU flush auto-clear at offset 0x%" PRIx64
 k230_rmu_reset_device(void) "K230 RMU device reset"
 k230_rmu_target_reset(uint64_t offset, unsigned target) "K230 RMU cold-reset target at offset 0x%" PRIx64 " target %u"
+# k230_decomp_gzip.c
+k230_decomp_gzip_read(uint64_t offset, unsigned int size, uint64_t value) "K230 DECOMP GZIP read: [0x%"PRIx64"] size %u -> 0x%"PRIx64
+k230_decomp_gzip_write(uint64_t offset, unsigned int size, uint64_t value) "K230 DECOMP GZIP write: [0x%"PRIx64"] size %u <- 0x%"PRIx64
