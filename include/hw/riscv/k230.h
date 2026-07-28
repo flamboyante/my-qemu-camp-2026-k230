@@ -18,7 +18,7 @@
 #include "hw/core/boards.h"
 #include "hw/misc/k230_hi_sys.h"
 #include "hw/riscv/riscv_hart.h"
-#include "hw/ssi/k230_dw_ssi.h"
+#include "hw/ssi/dw_ssi.h"
 #include "hw/watchdog/k230_wdt.h"
 
 #define C908_CPU_HARTID   (0)
@@ -35,7 +35,7 @@ typedef struct K230SoCState {
     RISCVHartArrayState c908_cpu; /* Small core */
 
     K230WdtState wdt[2];
-    K230DwSsiState dw_ssi[3];
+    DwSsiState dw_ssi[3];
     K230HiSysState hi_sys;
     MemoryRegion sram;
     MemoryRegion bootrom;

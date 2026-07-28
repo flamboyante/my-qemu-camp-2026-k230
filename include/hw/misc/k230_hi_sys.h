@@ -19,7 +19,7 @@
 #define HW_MISC_K230_HI_SYS_H
 
 #include "hw/core/sysbus.h"
-#include "hw/ssi/k230_dw_ssi.h"
+#include "hw/ssi/dw_ssi.h"
 #include "qom/object.h"
 
 #define TYPE_K230_HI_SYS "riscv.k230.hi-sys"
@@ -45,11 +45,11 @@ struct K230HiSysState {
 
     MemoryRegion mmio;
     uint32_t ssi_ctrl;
-    K230DwSsiState *ssi[3];
+    DwSsiState *ssi[3];
 };
 
 void k230_hi_sys_set_ssi(K230HiSysState *s, unsigned int index,
-                         K230DwSsiState *ssi);
+                         DwSsiState *ssi);
 bool k230_hi_sys_xip_enabled(const K230HiSysState *s);
 
 #endif /* HW_MISC_K230_HI_SYS_H */

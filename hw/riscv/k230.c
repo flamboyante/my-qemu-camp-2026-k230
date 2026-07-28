@@ -129,11 +129,11 @@ static void k230_soc_init(Object *obj)
     object_initialize_child(obj, "k230-wdt0", &s->wdt[0], TYPE_K230_WDT);
     object_initialize_child(obj, "k230-wdt1", &s->wdt[1], TYPE_K230_WDT);
     object_initialize_child(obj, "k230-qspi0", &s->dw_ssi[0],
-                            TYPE_K230_DW_SSI);
+                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-qspi1", &s->dw_ssi[1],
-                            TYPE_K230_DW_SSI);
+                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
-                            TYPE_K230_DW_SSI);
+                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-hi-sys", &s->hi_sys,
                             TYPE_K230_HI_SYS);
 
@@ -185,11 +185,11 @@ static void k230_connect_ssi_irqs(K230SoCState *s)
         SysBusDevice *ssi;
 
         g_assert(route->ssi_index < ARRAY_SIZE(s->dw_ssi));
-        g_assert(route->irq_base + K230_DW_SSI_IRQ_COUNT <=
+        g_assert(route->irq_base + DW_SSI_IRQ_COUNT <=
                  K230_PLIC_NUM_SOURCES);
 
         ssi = SYS_BUS_DEVICE(&s->dw_ssi[route->ssi_index]);
-        for (unsigned int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
+        for (unsigned int i = 0; i < DW_SSI_IRQ_COUNT; i++) {
             sysbus_connect_irq(ssi, i,
                 qdev_get_gpio_in(DEVICE(s->c908_plic), route->irq_base + i));
         }
@@ -263,7 +263,7 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
                             &s->dw_ssi[route->ssi_index]);
         if (logical_index == 0) {
-            k230_dw_ssi_set_hi_sys(&s->dw_ssi[route->ssi_index],
+            dw_ssi_set_hi_sys(&s->dw_ssi[route->ssi_index],
                                    &s->hi_sys);
         }
     }
@@ -547,7 +547,7 @@ static void k230_machine_set_spi_flash(Object *obj, const char *value,
     s->spi_flash_model = g_strdup(value);
 }
 
-static void k230_connect_spi_flash(K230DwSsiState *ssi, unsigned int cs,
+static void k230_connect_spi_flash(DwSsiState *ssi, unsigned int cs,
                                    const char *flash_type, DriveInfo *dinfo)
 {
     ObjectClass *flash_class;

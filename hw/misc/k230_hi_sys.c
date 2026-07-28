@@ -44,8 +44,8 @@ static uint32_t k230_hi_sys_ssi_status(const K230HiSysState *s)
             continue;
         }
 
-        value |= k230_dw_ssi_get_spi_mode(s->ssi[i]) << mode_shifts[i];
-        if (k230_dw_ssi_is_sleeping(s->ssi[i])) {
+        value |= dw_ssi_get_spi_mode(s->ssi[i]) << mode_shifts[i];
+        if (dw_ssi_is_sleeping(s->ssi[i])) {
             value |= sleep_bits[i];
         }
     }
@@ -109,7 +109,7 @@ static const MemoryRegionOps k230_hi_sys_ops = {
 };
 
 void k230_hi_sys_set_ssi(K230HiSysState *s, unsigned int index,
-                         K230DwSsiState *ssi)
+                         DwSsiState *ssi)
 {
     g_assert(index < ARRAY_SIZE(s->ssi));
     s->ssi[index] = ssi;

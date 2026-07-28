@@ -1,26 +1,22 @@
 /*
- * Kendryte K230 DesignWare SSI
+ * Synopsys DesignWare SSI
  *
  * Copyright (c) 2026 Kangjie Huang <flamboyant.h.01@gmail.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Emulates the DesignWare SSI controllers documented by the K230
- * Technical Reference Manual, including standard SPI, Dual/Quad SDR,
- * internal DMA, and the XIP read window.
+ * Emulates the DesignWare SSI controllers, including standard SPI,
+ * Dual/Quad SDR, internal DMA, and the XIP read window.
  *
- * K230 Technical Reference Manual V0.3.1 (2024-11-18):
- * https://github.com/revyos/external-docs/blob/master/K230/en-us/K230_Technical_Reference_Manual_V0.3.1_20241118.pdf
- *
- * For more information, see <https://www.kendryte.com/en/proDetail/230>
  */
+
 
 #include "qemu/osdep.h"
 #include "hw/core/registerfields.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "hw/misc/k230_hi_sys.h"
-#include "hw/ssi/k230_dw_ssi.h"
+#include "hw/ssi/dw_ssi.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/bitops.h"
@@ -29,25 +25,25 @@
 #include "system/dma.h"
 #include "trace.h"
 
-#define K230_DW_SSI_FIFO_CAPACITY 256
+#define DW_SSI_FIFO_CAPACITY 256
 
-#define K230_DW_SSI_CTRLR0_RESET            0x00004007
-#define K230_DW_SSI_SR_RESET                0x00000006
-#define K230_DW_SSI_IMR_RESET               0x0000003f
-#define K230_DW_SSI_IDR_RESET               0xa1b2c3d5
-#define K230_DW_SSI_SPI_CTRLR0_SPI_RESET    0x04000200
-#define K230_DW_SSI_SPI_CTRLR0_FMC_RESET    0x28000200
-#define K230_DW_SSI_AXIAWLEN_RESET          0x00000700
-#define K230_DW_SSI_AXIARLEN_RESET          0x00000700
-#define K230_DW_SSI_VERSION                 0x3130332a
-#define K230_DW_SSI_PIO_TX_BATCH            64
-#define K230_DW_SSI_IRQ_VALID_MASK          0x000009bf
+#define DW_SSI_CTRLR0_RESET            0x00004007
+#define DW_SSI_SR_RESET                0x00000006
+#define DW_SSI_IMR_RESET               0x0000003f
+#define DW_SSI_IDR_RESET               0xa1b2c3d5
+#define DW_SSI_SPI_CTRLR0_SPI_RESET    0x04000200
+#define DW_SSI_SPI_CTRLR0_FMC_RESET    0x28000200
+#define DW_SSI_AXIAWLEN_RESET          0x00000700
+#define DW_SSI_AXIARLEN_RESET          0x00000700
+#define DW_SSI_VERSION                 0x3130332a
+#define DW_SSI_PIO_TX_BATCH            64
+#define DW_SSI_IRQ_VALID_MASK          0x000009bf
 
 enum {
-    K230_DW_SSI_TMOD_TR,
-    K230_DW_SSI_TMOD_TO,
-    K230_DW_SSI_TMOD_RO,
-    K230_DW_SSI_TMOD_EEPROM_READ,
+    DW_SSI_TMOD_TR,
+    DW_SSI_TMOD_TO,
+    DW_SSI_TMOD_RO,
+    DW_SSI_TMOD_EEPROM_READ,
 };
 
 REG32(CTRLR0, 0x000)
@@ -209,7 +205,7 @@ REG32(XIP_WRITE_INCR_INST, 0x140)
 REG32(XIP_WRITE_WRAP_INST, 0x144)
 REG32(XIP_WRITE_CTRL, 0x148)
 
-#define K230_DW_SSI_CTRLR0_WRITABLE_MASK \
+#define DW_SSI_CTRLR0_WRITABLE_MASK \
     (R_CTRLR0_DFS_MASK | \
      R_CTRLR0_SCPH_MASK | \
      R_CTRLR0_SCPOL_MASK | \
@@ -221,25 +217,25 @@ REG32(XIP_WRITE_CTRL, 0x148)
      R_CTRLR0_SPI_FRF_MASK | \
      R_CTRLR0_SPI_HYPERBUS_EN_MASK)
 
-#define K230_DW_SSI_CTRLR1_WRITABLE_MASK R_CTRLR1_NDF_MASK
-#define K230_DW_SSI_MWCR_WRITABLE_MASK \
+#define DW_SSI_CTRLR1_WRITABLE_MASK R_CTRLR1_NDF_MASK
+#define DW_SSI_MWCR_WRITABLE_MASK \
     (R_MWCR_MWMOD_MASK | R_MWCR_MDD_MASK)
-#define K230_DW_SSI_BAUDR_WRITABLE_MASK R_BAUDR_SCKDV_MASK
-#define K230_DW_SSI_TXFTLR_WRITABLE_MASK \
+#define DW_SSI_BAUDR_WRITABLE_MASK R_BAUDR_SCKDV_MASK
+#define DW_SSI_TXFTLR_WRITABLE_MASK \
     (R_TXFTLR_TFT_MASK | R_TXFTLR_TXFTHR_MASK)
-#define K230_DW_SSI_RXFTLR_WRITABLE_MASK R_RXFTLR_RFT_MASK
-#define K230_DW_SSI_DMACR_WRITABLE_MASK \
+#define DW_SSI_RXFTLR_WRITABLE_MASK R_RXFTLR_RFT_MASK
+#define DW_SSI_DMACR_WRITABLE_MASK \
     (R_DMACR_IDMAE_MASK | R_DMACR_ATW_MASK | R_DMACR_AINC_MASK | \
      R_DMACR_ACACHE_MASK | R_DMACR_APROT_MASK | R_DMACR_AID_MASK)
-#define K230_DW_SSI_AXIAWLEN_WRITABLE_MASK R_AXIAWLEN_AWLEN_MASK
-#define K230_DW_SSI_AXIARLEN_WRITABLE_MASK R_AXIARLEN_ARLEN_MASK
-#define K230_DW_SSI_IMR_WRITABLE_MASK \
+#define DW_SSI_AXIAWLEN_WRITABLE_MASK R_AXIAWLEN_AWLEN_MASK
+#define DW_SSI_AXIARLEN_WRITABLE_MASK R_AXIARLEN_ARLEN_MASK
+#define DW_SSI_IMR_WRITABLE_MASK \
     (R_IMR_TXEIM_MASK | R_IMR_TXOIM_MASK | R_IMR_RXUIM_MASK | \
      R_IMR_RXOIM_MASK | R_IMR_RXFIM_MASK | R_IMR_MSTIM_MASK | \
      R_IMR_TXUIM_MASK | R_IMR_AXIEM_MASK | R_IMR_DONEM_MASK)
-#define K230_DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK \
+#define DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK \
     (R_RX_SAMPLE_DELAY_RSD_MASK | R_RX_SAMPLE_DELAY_SE_MASK)
-#define K230_DW_SSI_SPI_CTRLR0_WRITABLE_MASK \
+#define DW_SSI_SPI_CTRLR0_WRITABLE_MASK \
     (R_SPI_CTRLR0_CLK_STRETCH_EN_MASK | \
      R_SPI_CTRLR0_XIP_PREFETCH_EN_MASK | \
      R_SPI_CTRLR0_XIP_MBL_MASK | \
@@ -256,40 +252,40 @@ REG32(XIP_WRITE_CTRL, 0x148)
      R_SPI_CTRLR0_XIP_MD_BIT_EN_MASK | \
      R_SPI_CTRLR0_ADDR_L_MASK | \
      R_SPI_CTRLR0_TRANS_TYPE_MASK)
-#define K230_DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK \
+#define DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK \
     R_DDR_DRIVE_EDGE_TDE_MASK
-#define K230_DW_SSI_XIP_MODE_BITS_WRITABLE_MASK \
+#define DW_SSI_XIP_MODE_BITS_WRITABLE_MASK \
     R_XIP_MODE_BITS_XIP_MD_BITS_MASK
-#define K230_DW_SSI_XIP_INCR_INST_WRITABLE_MASK \
+#define DW_SSI_XIP_INCR_INST_WRITABLE_MASK \
     R_XIP_INCR_INST_INCR_INST_MASK
-#define K230_DW_SSI_XIP_WRAP_INST_WRITABLE_MASK \
+#define DW_SSI_XIP_WRAP_INST_WRITABLE_MASK \
     R_XIP_WRAP_INST_WRAP_INST_MASK
-#define K230_DW_SSI_SPIDR_WRITABLE_MASK R_SPIDR_SPI_INST_MASK
-#define K230_DW_SSI_SPIAR_WRITABLE_MASK R_SPIAR_SDAR_MASK
-#define K230_DW_SSI_AXIAR0_WRITABLE_MASK R_AXIAR0_AXIAR_0_31_MASK
-#define K230_DW_SSI_AXIAR1_WRITABLE_MASK R_AXIAR1_AXIAR_32_63_MASK
+#define DW_SSI_SPIDR_WRITABLE_MASK R_SPIDR_SPI_INST_MASK
+#define DW_SSI_SPIAR_WRITABLE_MASK R_SPIAR_SDAR_MASK
+#define DW_SSI_AXIAR0_WRITABLE_MASK R_AXIAR0_AXIAR_0_31_MASK
+#define DW_SSI_AXIAR1_WRITABLE_MASK R_AXIAR1_AXIAR_32_63_MASK
 
-static const uint32_t k230_dw_ssi_irq_status_mask[
-    K230_DW_SSI_IRQ_COUNT] = {
-    [K230_DW_SSI_IRQ_TXE] = R_RISR_TXEIR_MASK,
-    [K230_DW_SSI_IRQ_TXO] = R_RISR_TXOIR_MASK,
-    [K230_DW_SSI_IRQ_RXF] = R_RISR_RXFIR_MASK,
-    [K230_DW_SSI_IRQ_RXO] = R_RISR_RXOIR_MASK,
-    [K230_DW_SSI_IRQ_TXU] = R_RISR_TXUIR_MASK,
-    [K230_DW_SSI_IRQ_RXU] = R_RISR_RXUIR_MASK,
-    [K230_DW_SSI_IRQ_MST] = R_RISR_MSTIR_MASK,
-    [K230_DW_SSI_IRQ_DONE] = R_RISR_DONER_MASK,
-    [K230_DW_SSI_IRQ_AXIE] = R_RISR_AXIER_MASK,
+static const uint32_t dw_ssi_irq_status_mask[
+    DW_SSI_IRQ_COUNT] = {
+    [DW_SSI_IRQ_TXE] = R_RISR_TXEIR_MASK,
+    [DW_SSI_IRQ_TXO] = R_RISR_TXOIR_MASK,
+    [DW_SSI_IRQ_RXF] = R_RISR_RXFIR_MASK,
+    [DW_SSI_IRQ_RXO] = R_RISR_RXOIR_MASK,
+    [DW_SSI_IRQ_TXU] = R_RISR_TXUIR_MASK,
+    [DW_SSI_IRQ_RXU] = R_RISR_RXUIR_MASK,
+    [DW_SSI_IRQ_MST] = R_RISR_MSTIR_MASK,
+    [DW_SSI_IRQ_DONE] = R_RISR_DONER_MASK,
+    [DW_SSI_IRQ_AXIE] = R_RISR_AXIER_MASK,
 };
 
-static void k230_dw_ssi_write_masked(K230DwSsiState *s, unsigned int reg,
+static void dw_ssi_write_masked(DwSsiState *s, unsigned int reg,
                                      uint32_t value, uint32_t mask)
 {
     s->regs[reg] = (s->regs[reg] & ~mask) | (value & mask);
-    trace_k230_dw_ssi_reg_write(s, reg * sizeof(uint32_t), s->regs[reg]);
+    trace_dw_ssi_reg_write(s, reg * sizeof(uint32_t), s->regs[reg]);
 }
 
-static uint32_t k230_dw_ssi_irq_raw_status(K230DwSsiState *s)
+static uint32_t dw_ssi_irq_raw_status(DwSsiState *s)
 {
     uint32_t status = s->irq_latched;
     uint32_t tx_used = fifo32_num_used(&s->tx_fifo);
@@ -305,65 +301,65 @@ static uint32_t k230_dw_ssi_irq_raw_status(K230DwSsiState *s)
     if (rx_used > rx_threshold) {
         status |= R_RISR_RXFIR_MASK;
     }
-    return status & K230_DW_SSI_IRQ_VALID_MASK;
+    return status & DW_SSI_IRQ_VALID_MASK;
 }
 
-static void k230_dw_ssi_update_irq(K230DwSsiState *s)
+static void dw_ssi_update_irq(DwSsiState *s)
 {
-    uint32_t status = k230_dw_ssi_irq_raw_status(s) &
-                      s->regs[R_IMR] & K230_DW_SSI_IRQ_VALID_MASK;
+    uint32_t status = dw_ssi_irq_raw_status(s) &
+                      s->regs[R_IMR] & DW_SSI_IRQ_VALID_MASK;
 
-    for (int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
-        trace_k230_dw_ssi_irq_update(
-            s, i, !!(status & k230_dw_ssi_irq_status_mask[i]));
-        qemu_set_irq(s->irqs[i], !!(status & k230_dw_ssi_irq_status_mask[i]));
+    for (int i = 0; i < DW_SSI_IRQ_COUNT; i++) {
+        trace_dw_ssi_irq_update(
+            s, i, !!(status & dw_ssi_irq_status_mask[i]));
+        qemu_set_irq(s->irqs[i], !!(status & dw_ssi_irq_status_mask[i]));
     }
 }
 
-static uint32_t k230_dw_ssi_irq_read_clear(K230DwSsiState *s,
+static uint32_t dw_ssi_irq_read_clear(DwSsiState *s,
                                             uint32_t clear_mask)
 {
     uint32_t active = s->irq_latched & clear_mask;
 
     s->irq_latched &= ~clear_mask;
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
     return !!active;
 }
 
-static uint32_t k230_dw_ssi_frame_masked(K230DwSsiState *s)
+static uint32_t dw_ssi_frame_masked(DwSsiState *s)
 {
     unsigned int bits = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, DFS) + 1;
 
     return bits == 32 ? UINT32_MAX : MAKE_64BIT_MASK(0, bits);
 }
 
-static bool k230_dw_ssi_enabled(const K230DwSsiState *s)
+static bool dw_ssi_enabled(const DwSsiState *s)
 {
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
 
-uint32_t k230_dw_ssi_get_spi_mode(const K230DwSsiState *s)
+uint32_t dw_ssi_get_spi_mode(const DwSsiState *s)
 {
     return FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
 }
 
-bool k230_dw_ssi_is_sleeping(const K230DwSsiState *s)
+bool dw_ssi_is_sleeping(const DwSsiState *s)
 {
     return s->sleep_status;
 }
 
-void k230_dw_ssi_set_hi_sys(K230DwSsiState *s, K230HiSysState *hi_sys)
+void dw_ssi_set_hi_sys(DwSsiState *s, K230HiSysState *hi_sys)
 {
     s->hi_sys = hi_sys;
 }
 
-static void k230_dw_ssi_deselect(K230DwSsiState *s)
+static void dw_ssi_deselect(DwSsiState *s)
 {
     if (s->active_cs < 0) {
         return;
     }
 
-    trace_k230_dw_ssi_transaction_end(
+    trace_dw_ssi_transaction_end(
         s, s->active_cs,
         FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD),
         FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF),
@@ -372,13 +368,13 @@ static void k230_dw_ssi_deselect(K230DwSsiState *s)
     s->active_cs = -1;
 }
 
-static void k230_dw_ssi_select(K230DwSsiState *s, unsigned cs)
+static void dw_ssi_select(DwSsiState *s, unsigned cs)
 {
     if (cs >= s->num_cs) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: invalid chip select %u\n",
                       DEVICE(s)->canonical_path, cs);
-        k230_dw_ssi_deselect(s);
+        dw_ssi_deselect(s);
         return;
     }
 
@@ -386,21 +382,21 @@ static void k230_dw_ssi_select(K230DwSsiState *s, unsigned cs)
         return;
     }
 
-    k230_dw_ssi_deselect(s);
+    dw_ssi_deselect(s);
     qemu_irq_lower(s->cs_lines[cs]);
     s->active_cs = cs;
-    trace_k230_dw_ssi_transaction_start(
+    trace_dw_ssi_transaction_start(
         s, cs, FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD),
         FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF),
         fifo32_num_used(&s->tx_fifo), fifo32_num_used(&s->rx_fifo));
 }
 
-static void k230_dw_ssi_update_cs(K230DwSsiState *s)
+static void dw_ssi_update_cs(DwSsiState *s)
 {
     uint32_t ser = s->regs[R_SER];
 
-    if (!k230_dw_ssi_enabled(s) || !ser) {
-        k230_dw_ssi_deselect(s);
+    if (!dw_ssi_enabled(s) || !ser) {
+        dw_ssi_deselect(s);
         return;
     }
 
@@ -408,67 +404,67 @@ static void k230_dw_ssi_update_cs(K230DwSsiState *s)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: multiple chip selects enabled: 0x%x\n",
                       DEVICE(s)->canonical_path, ser);
-        k230_dw_ssi_deselect(s);
+        dw_ssi_deselect(s);
         return;
     }
 
-    k230_dw_ssi_select(s, ctz32(ser));
+    dw_ssi_select(s, ctz32(ser));
 }
 
-static void k230_dw_ssi_abort_transfer(K230DwSsiState *s)
+static void dw_ssi_abort_transfer(DwSsiState *s)
 {
-    k230_dw_ssi_deselect(s);
+    dw_ssi_deselect(s);
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
-    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->phase = DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
 }
 
-static uint32_t k230_dw_ssi_status(K230DwSsiState *s)
+static uint32_t dw_ssi_status(DwSsiState *s)
 {
     uint32_t tx_used = fifo32_num_used(&s->tx_fifo);
     uint32_t rx_used = fifo32_num_used(&s->rx_fifo);
     uint32_t sr = 0;
 
-    sr = FIELD_DP32(sr, SR, BUSY, s->phase != K230_DW_SSI_PHASE_IDLE);
-    sr = FIELD_DP32(sr, SR, TFNF, tx_used < K230_DW_SSI_FIFO_CAPACITY);
+    sr = FIELD_DP32(sr, SR, BUSY, s->phase != DW_SSI_PHASE_IDLE);
+    sr = FIELD_DP32(sr, SR, TFNF, tx_used < DW_SSI_FIFO_CAPACITY);
     sr = FIELD_DP32(sr, SR, TFE, tx_used == 0);
     sr = FIELD_DP32(sr, SR, RFNE, rx_used != 0);
     sr = FIELD_DP32(sr, SR, RFF,
-                    rx_used == K230_DW_SSI_FIFO_CAPACITY);
+                    rx_used == DW_SSI_FIFO_CAPACITY);
     sr = FIELD_DP32(sr, SR, CMPLTD_DF, s->idma_completed_frames);
 
     return sr;
 }
 
-static void k230_dw_ssi_run_transfer(K230DwSsiState *s);
+static void dw_ssi_run_transfer(DwSsiState *s);
 
-static void k230_dw_ssi_push_tx(K230DwSsiState *s, uint32_t tx)
+static void dw_ssi_push_tx(DwSsiState *s, uint32_t tx)
 {
-    if (!k230_dw_ssi_enabled(s)) {
+    if (!dw_ssi_enabled(s)) {
         return;
     }
 
     if (fifo32_is_full(&s->tx_fifo)) {
         s->irq_latched |= R_RISR_TXOIR_MASK;
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_update_irq(s);
         return;
     }
 
     fifo32_push(&s->tx_fifo, tx);
 
-    if (s->phase != K230_DW_SSI_PHASE_STANDARD_TX_ONLY) {
-        k230_dw_ssi_run_transfer(s);
+    if (s->phase != DW_SSI_PHASE_STANDARD_TX_ONLY) {
+        dw_ssi_run_transfer(s);
     }
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
 }
 
-static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
+static uint32_t dw_ssi_send_frame(DwSsiState *s,
                                         uint32_t tx)
 {
-    uint32_t mask = k230_dw_ssi_frame_masked(s);
+    uint32_t mask = dw_ssi_frame_masked(s);
     uint32_t rx;
 
     tx &= mask;
@@ -482,7 +478,7 @@ static uint32_t k230_dw_ssi_send_frame(K230DwSsiState *s,
     return rx & mask;
 }
 
-static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
+static bool dw_ssi_enhanced_config_supported(DwSsiState *s)
 {
     uint32_t ctrlr0 = s->regs[R_CTRLR0];
     uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
@@ -524,7 +520,7 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
         return false;
     }
 
-    if (tmod != K230_DW_SSI_TMOD_RO && tmod != K230_DW_SSI_TMOD_TO) {
+    if (tmod != DW_SSI_TMOD_RO && tmod != DW_SSI_TMOD_TO) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: unsupported enhanced TMOD=%u\n",
                       DEVICE(s)->canonical_path, tmod);
@@ -544,8 +540,8 @@ static bool k230_dw_ssi_enhanced_config_supported(K230DwSsiState *s)
     return true;
 }
 
-static bool k230_dw_ssi_decode_enhanced_command(
-    K230DwSsiState *s, K230DwSsiEnhancedCommand *command)
+static bool dw_ssi_decode_enhanced_command(
+    DwSsiState *s, DwSsiEnhancedCommand *command)
 {
     uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     uint32_t inst_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, INST_L);
@@ -558,7 +554,7 @@ static bool k230_dw_ssi_decode_enhanced_command(
     bool mode_bits_enabled =
         FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, XIP_MD_BIT_EN);
 
-    if (!k230_dw_ssi_enhanced_config_supported(s)) {
+    if (!dw_ssi_enhanced_config_supported(s)) {
         return false;
     }
 
@@ -598,12 +594,12 @@ static bool k230_dw_ssi_decode_enhanced_command(
     return true;
 }
 
-static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
+static bool dw_ssi_prepare_enhanced_command(DwSsiState *s)
 {
-    K230DwSsiEnhancedCommand command = { 0 };
+    DwSsiEnhancedCommand command = { 0 };
     uint32_t required_items;
 
-    if (!k230_dw_ssi_decode_enhanced_command(s, &command)) {
+    if (!dw_ssi_decode_enhanced_command(s, &command)) {
         return false;
     }
 
@@ -624,11 +620,11 @@ static bool k230_dw_ssi_prepare_enhanced_command(K230DwSsiState *s)
 
     s->enhanced = command;
     s->remaining_frames = command.data_frames;
-    s->phase = K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION;
+    s->phase = DW_SSI_PHASE_ENHANCED_INSTRUCTION;
     return true;
 }
 
-static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
+static void dw_ssi_send_enhanced_field(DwSsiState *s,
                                              uint32_t value,
                                              uint32_t bits)
 {
@@ -641,7 +637,7 @@ static void k230_dw_ssi_send_enhanced_field(K230DwSsiState *s,
     }
 }
 
-static uint32_t k230_dw_ssi_dummy_bytes(uint32_t spi_frf,
+static uint32_t dw_ssi_dummy_bytes(uint32_t spi_frf,
                                          uint32_t trans_type,
                                          uint32_t wait_cycles)
 {
@@ -654,7 +650,7 @@ static uint32_t k230_dw_ssi_dummy_bytes(uint32_t spi_frf,
     return DIV_ROUND_UP(wait_cycles * lines, 8);
 }
 
-static bool k230_dw_ssi_xip_config_supported(K230DwSsiState *s)
+static bool dw_ssi_xip_config_supported(DwSsiState *s)
 {
     uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
@@ -698,8 +694,8 @@ static bool k230_dw_ssi_xip_config_supported(K230DwSsiState *s)
     return true;
 }
 
-static bool k230_dw_ssi_prepare_xip_command(
-    K230DwSsiState *s, hwaddr address, K230DwSsiEnhancedCommand *command)
+static bool dw_ssi_prepare_xip_command(
+    DwSsiState *s, hwaddr address, DwSsiEnhancedCommand *command)
 {
     uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
     uint32_t inst_l = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_L);
@@ -740,11 +736,11 @@ static bool k230_dw_ssi_prepare_xip_command(
     return true;
 }
 
-static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr address,
+static uint64_t dw_ssi_xip_read(void *opaque, hwaddr address,
                                      unsigned int size)
 {
-    K230DwSsiState *s = K230_DW_SSI(opaque);
-    K230DwSsiEnhancedCommand command = { 0 };
+    DwSsiState *s = DW_SSI(opaque);
+    DwSsiEnhancedCommand command = { 0 };
     uint64_t value = 0;
     uint32_t dummy_bytes;
 
@@ -752,34 +748,34 @@ static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr address,
         return 0;
     }
 
-    if (!k230_dw_ssi_xip_config_supported(s) ||
-        !k230_dw_ssi_prepare_xip_command(s, address, &command)) {
+    if (!dw_ssi_xip_config_supported(s) ||
+        !dw_ssi_prepare_xip_command(s, address, &command)) {
         return 0;
     }
 
-    if (s->active_cs >= 0 || s->phase != K230_DW_SSI_PHASE_IDLE) {
-        k230_dw_ssi_abort_transfer(s);
+    if (s->active_cs >= 0 || s->phase != DW_SSI_PHASE_IDLE) {
+        dw_ssi_abort_transfer(s);
     }
 
-    k230_dw_ssi_select(s, 0);
+    dw_ssi_select(s, 0);
     if (s->active_cs != 0) {
         return 0;
     }
 
     if (command.instruction_bits != 0) {
-        k230_dw_ssi_send_enhanced_field(s, command.instruction,
+        dw_ssi_send_enhanced_field(s, command.instruction,
                                          command.instruction_bits);
     }
     if (command.address_bits != 0) {
-        k230_dw_ssi_send_enhanced_field(s, command.address,
+        dw_ssi_send_enhanced_field(s, command.address,
                                          command.address_bits);
     }
     if (command.mode_bits_enabled) {
-        k230_dw_ssi_send_enhanced_field(s, command.mode,
+        dw_ssi_send_enhanced_field(s, command.mode,
                                          command.mode_bits);
     }
 
-    dummy_bytes = k230_dw_ssi_dummy_bytes(
+    dummy_bytes = dw_ssi_dummy_bytes(
         command.spi_frf, command.trans_type, command.wait_cycles);
     for (uint32_t i = 0; i < dummy_bytes; i++) {
         ssi_transfer(s->spi, 0);
@@ -789,24 +785,24 @@ static uint64_t k230_dw_ssi_xip_read(void *opaque, hwaddr address,
         value |= (uint64_t)(ssi_transfer(s->spi, 0) & 0xff) << (8 * i);
     }
 
-    trace_k230_dw_ssi_xip_read(s, address, size, value);
-    k230_dw_ssi_deselect(s);
+    trace_dw_ssi_xip_read(s, address, size, value);
+    dw_ssi_deselect(s);
     return value;
 }
 
-static void k230_dw_ssi_xip_write(void *opaque, hwaddr address,
+static void dw_ssi_xip_write(void *opaque, hwaddr address,
                                   uint64_t value, unsigned int size)
 {
-    K230DwSsiState *s = K230_DW_SSI(opaque);
+    DwSsiState *s = DW_SSI(opaque);
 
     qemu_log_mask(LOG_GUEST_ERROR,
                   "%s: XIP write at 0x%" HWADDR_PRIx " is unsupported\n",
                   DEVICE(s)->canonical_path, address);
 }
 
-static const MemoryRegionOps k230_dw_ssi_xip_ops = {
-    .read = k230_dw_ssi_xip_read,
-    .write = k230_dw_ssi_xip_write,
+static const MemoryRegionOps dw_ssi_xip_ops = {
+    .read = dw_ssi_xip_read,
+    .write = dw_ssi_xip_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1,
@@ -820,44 +816,44 @@ static const MemoryRegionOps k230_dw_ssi_xip_ops = {
     },
 };
 
-static bool k230_dw_ssi_idma_enabled(const K230DwSsiState *s)
+static bool dw_ssi_idma_enabled(const DwSsiState *s)
 {
     return FIELD_EX32(s->regs[R_DMACR], DMACR, IDMAE);
 }
 
-static uint64_t k230_dw_ssi_idma_address(const K230DwSsiState *s)
+static uint64_t dw_ssi_idma_address(const DwSsiState *s)
 {
     return s->regs[R_AXIAR0] | ((uint64_t)s->regs[R_AXIAR1] << 32);
 }
 
-static bool k230_dw_ssi_idma_triggered(const K230DwSsiState *s)
+static bool dw_ssi_idma_triggered(const DwSsiState *s)
 {
     uint32_t ser = s->regs[R_SER];
 
-    return k230_dw_ssi_idma_enabled(s) &&
-           k230_dw_ssi_enabled(s) && ser &&
+    return dw_ssi_idma_enabled(s) &&
+           dw_ssi_enabled(s) && ser &&
            !(ser & (ser - 1)) &&
-           s->phase == K230_DW_SSI_PHASE_IDLE;
+           s->phase == DW_SSI_PHASE_IDLE;
 }
 
-static void k230_dw_ssi_idma_end(K230DwSsiState *s, uint32_t cause)
+static void dw_ssi_idma_end(DwSsiState *s, uint32_t cause)
 {
     s->regs[R_SSIENR] = 0;
     s->sleep_status = true;
-    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->phase = DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
-    k230_dw_ssi_deselect(s);
+    dw_ssi_deselect(s);
     s->irq_latched |= cause;
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
 }
 
-static void k230_dw_ssi_idma_fail(K230DwSsiState *s, const char *operation)
+static void dw_ssi_idma_fail(DwSsiState *s, const char *operation)
 {
     qemu_log_mask(LOG_GUEST_ERROR,
                   "%s: IDMA %s memory access failed\n",
                   DEVICE(s)->canonical_path, operation);
     s->idma_completed_frames = 0;
-    k230_dw_ssi_idma_end(s, R_RISR_AXIER_MASK);
+    dw_ssi_idma_end(s, R_RISR_AXIER_MASK);
 }
 
 /*
@@ -865,16 +861,16 @@ static void k230_dw_ssi_idma_fail(K230DwSsiState *s, const char *operation)
  * so complete IDMA synchronously without modeling AXI timing or FIFO
  * backpressure.
  */
-static void k230_dw_ssi_try_idma(K230DwSsiState *s)
+static void dw_ssi_try_idma(DwSsiState *s)
 {
-    K230DwSsiEnhancedCommand command = { 0 };
+    DwSsiEnhancedCommand command = { 0 };
     g_autofree uint8_t *buffer = NULL;
     uint64_t address;
     uint32_t dummy_bytes;
     uint32_t length;
     MemTxResult result;
 
-    if (!k230_dw_ssi_idma_triggered(s)) {
+    if (!dw_ssi_idma_triggered(s)) {
         return;
     }
 
@@ -883,7 +879,7 @@ static void k230_dw_ssi_try_idma(K230DwSsiState *s)
                       "%s: fixed-address IDMA is unsupported\n",
                       DEVICE(s)->canonical_path);
         s->idma_completed_frames = 0;
-        k230_dw_ssi_idma_end(s, 0);
+        dw_ssi_idma_end(s, 0);
         return;
     }
 
@@ -893,7 +889,7 @@ static void k230_dw_ssi_try_idma(K230DwSsiState *s)
                       "%s: IDMA requires empty TX and RX FIFOs\n",
                       DEVICE(s)->canonical_path);
         s->idma_completed_frames = 0;
-        k230_dw_ssi_idma_end(s, 0);
+        dw_ssi_idma_end(s, 0);
         return;
     }
 
@@ -902,13 +898,13 @@ static void k230_dw_ssi_try_idma(K230DwSsiState *s)
                       "%s: IDMA only supports 8-bit data frames\n",
                       DEVICE(s)->canonical_path);
         s->idma_completed_frames = 0;
-        k230_dw_ssi_idma_end(s, 0);
+        dw_ssi_idma_end(s, 0);
         return;
     }
 
-    if (!k230_dw_ssi_decode_enhanced_command(s, &command)) {
+    if (!dw_ssi_decode_enhanced_command(s, &command)) {
         s->idma_completed_frames = 0;
-        k230_dw_ssi_idma_end(s, 0);
+        dw_ssi_idma_end(s, 0);
         return;
     }
 
@@ -917,69 +913,69 @@ static void k230_dw_ssi_try_idma(K230DwSsiState *s)
     command.address = s->regs[R_SPIAR] &
         (uint32_t)MAKE_64BIT_MASK(0, command.address_bits);
     length = command.data_frames;
-    address = k230_dw_ssi_idma_address(s);
+    address = dw_ssi_idma_address(s);
     s->idma_completed_frames = 0;
 
     if (address > UINT64_MAX - (length - 1)) {
-        trace_k230_dw_ssi_idma_error(s, 0, address);
-        k230_dw_ssi_idma_fail(s, "address range");
+        trace_dw_ssi_idma_error(s, 0, address);
+        dw_ssi_idma_fail(s, "address range");
         return;
     }
 
-    trace_k230_dw_ssi_idma_start(
+    trace_dw_ssi_idma_start(
         s, command.tmod, command.spi_frf, length, address, command.address);
     buffer = g_malloc(length);
-    if (command.tmod == K230_DW_SSI_TMOD_TO) {
+    if (command.tmod == DW_SSI_TMOD_TO) {
         result = dma_memory_read(&address_space_memory, address, buffer,
                                  length, MEMTXATTRS_UNSPECIFIED);
         if (result != MEMTX_OK) {
-            trace_k230_dw_ssi_idma_error(s, 1, address);
-            k230_dw_ssi_idma_fail(s, "source");
+            trace_dw_ssi_idma_error(s, 1, address);
+            dw_ssi_idma_fail(s, "source");
             return;
         }
     }
 
-    k230_dw_ssi_update_cs(s);
+    dw_ssi_update_cs(s);
     if (s->active_cs < 0) {
-        k230_dw_ssi_idma_end(s, 0);
+        dw_ssi_idma_end(s, 0);
         return;
     }
 
     if (command.instruction_bits != 0) {
-        k230_dw_ssi_send_enhanced_field(s, command.instruction,
+        dw_ssi_send_enhanced_field(s, command.instruction,
                                          command.instruction_bits);
     }
     if (command.address_bits != 0) {
-        k230_dw_ssi_send_enhanced_field(s, command.address,
+        dw_ssi_send_enhanced_field(s, command.address,
                                          command.address_bits);
     }
     if (command.mode_bits_enabled) {
-        k230_dw_ssi_send_enhanced_field(s, command.mode,
+        dw_ssi_send_enhanced_field(s, command.mode,
                                          command.mode_bits);
     } else if (command.trans_type == 1 && command.wait_cycles >= 2) {
         /*
          * The SDK's 1-4-4 read supplies its mode byte through XIP_MODE_BITS
          * without XIP_MD_BIT_EN; one Quad byte consumes two wait cycles.
          */
-        k230_dw_ssi_send_enhanced_field(s, s->regs[R_XIP_MODE_BITS], 8);
+        dw_ssi_send_enhanced_field(s, s->regs[R_XIP_MODE_BITS], 8);
         command.wait_cycles -= 2;
     }
 
-    dummy_bytes = k230_dw_ssi_dummy_bytes(
+    dummy_bytes = dw_ssi_dummy_bytes(
         command.spi_frf, command.trans_type, command.wait_cycles);
     for (uint32_t i = 0; i < dummy_bytes; i++) {
         ssi_transfer(s->spi, 0);
     }
 
-    if (command.tmod == K230_DW_SSI_TMOD_RO) {
+    if (command.tmod == DW_SSI_TMOD_RO) {
         for (uint32_t i = 0; i < length; i++) {
             buffer[i] = ssi_transfer(s->spi, 0);
         }
         result = dma_memory_write(&address_space_memory, address, buffer,
                                   length, MEMTXATTRS_UNSPECIFIED);
         if (result != MEMTX_OK) {
-            trace_k230_dw_ssi_idma_error(s, 2, address);
-            k230_dw_ssi_idma_fail(s, "destination");
+            trace_dw_ssi_idma_error(s, 2, address);
+            dw_ssi_idma_fail(s, "destination");
             return;
         }
     } else {
@@ -989,25 +985,25 @@ static void k230_dw_ssi_try_idma(K230DwSsiState *s)
     }
 
     s->idma_completed_frames = length;
-    trace_k230_dw_ssi_idma_done(s, address, length);
-    k230_dw_ssi_idma_end(s, R_RISR_DONER_MASK);
+    trace_dw_ssi_idma_done(s, address, length);
+    dw_ssi_idma_end(s, R_RISR_DONER_MASK);
 }
 
-static void k230_dw_ssi_run_enhanced_rx_data(K230DwSsiState *s)
+static void dw_ssi_run_enhanced_rx_data(DwSsiState *s)
 {
     while (!fifo32_is_full(&s->rx_fifo) &&
            s->remaining_frames > 0) {
         uint32_t rx = ssi_transfer(s->spi, 0);
 
         fifo32_push(&s->rx_fifo,
-                    rx & k230_dw_ssi_frame_masked(s));
+                    rx & dw_ssi_frame_masked(s));
         s->remaining_frames--;
     }
 }
 
-static void k230_dw_ssi_run_enhanced_tx_data(K230DwSsiState *s)
+static void dw_ssi_run_enhanced_tx_data(DwSsiState *s)
 {
-    uint32_t mask = k230_dw_ssi_frame_masked(s);
+    uint32_t mask = dw_ssi_frame_masked(s);
 
     while (!fifo32_is_empty(&s->tx_fifo) &&
            s->remaining_frames > 0) {
@@ -1018,92 +1014,92 @@ static void k230_dw_ssi_run_enhanced_tx_data(K230DwSsiState *s)
     }
 }
 
-static void k230_dw_ssi_run_enhanced_transfer(K230DwSsiState *s)
+static void dw_ssi_run_enhanced_transfer(DwSsiState *s)
 {
-    if (s->phase == K230_DW_SSI_PHASE_IDLE) {
-        if (!k230_dw_ssi_prepare_enhanced_command(s)) {
+    if (s->phase == DW_SSI_PHASE_IDLE) {
+        if (!dw_ssi_prepare_enhanced_command(s)) {
             return;
         }
     }
 
-    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_INSTRUCTION) {
+    if (s->phase == DW_SSI_PHASE_ENHANCED_INSTRUCTION) {
         if (s->enhanced.instruction_bits != 0) {
-            k230_dw_ssi_send_enhanced_field(
+            dw_ssi_send_enhanced_field(
                 s, s->enhanced.instruction,
                 s->enhanced.instruction_bits);
         }
-        s->phase = K230_DW_SSI_PHASE_ENHANCED_ADDRESS;
+        s->phase = DW_SSI_PHASE_ENHANCED_ADDRESS;
     }
 
-    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_ADDRESS) {
+    if (s->phase == DW_SSI_PHASE_ENHANCED_ADDRESS) {
         if (s->enhanced.address_bits != 0) {
-            k230_dw_ssi_send_enhanced_field(
+            dw_ssi_send_enhanced_field(
                 s, s->enhanced.address, s->enhanced.address_bits);
         }
-        s->phase = K230_DW_SSI_PHASE_ENHANCED_MODE;
+        s->phase = DW_SSI_PHASE_ENHANCED_MODE;
     }
 
-    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_MODE) {
+    if (s->phase == DW_SSI_PHASE_ENHANCED_MODE) {
         if (s->enhanced.mode_bits_enabled) {
-            k230_dw_ssi_send_enhanced_field(
+            dw_ssi_send_enhanced_field(
                 s, s->enhanced.mode, s->enhanced.mode_bits);
         }
-        s->phase = K230_DW_SSI_PHASE_ENHANCED_DUMMY;
+        s->phase = DW_SSI_PHASE_ENHANCED_DUMMY;
     }
 
-    if (s->phase == K230_DW_SSI_PHASE_ENHANCED_DUMMY) {
-        uint32_t dummy_bytes = k230_dw_ssi_dummy_bytes(
+    if (s->phase == DW_SSI_PHASE_ENHANCED_DUMMY) {
+        uint32_t dummy_bytes = dw_ssi_dummy_bytes(
             s->enhanced.spi_frf, s->enhanced.trans_type,
             s->enhanced.wait_cycles);
 
         for (uint32_t i = 0; i < dummy_bytes; i++) {
             ssi_transfer(s->spi, 0);
         }
-        s->phase = K230_DW_SSI_PHASE_ENHANCED_DATA;
+        s->phase = DW_SSI_PHASE_ENHANCED_DATA;
     }
 
-    if (s->phase != K230_DW_SSI_PHASE_ENHANCED_DATA) {
+    if (s->phase != DW_SSI_PHASE_ENHANCED_DATA) {
         g_assert_not_reached();
     }
 
     switch (s->enhanced.tmod) {
-    case K230_DW_SSI_TMOD_RO:
-        k230_dw_ssi_run_enhanced_rx_data(s);
+    case DW_SSI_TMOD_RO:
+        dw_ssi_run_enhanced_rx_data(s);
         break;
-    case K230_DW_SSI_TMOD_TO:
-        k230_dw_ssi_run_enhanced_tx_data(s);
+    case DW_SSI_TMOD_TO:
+        dw_ssi_run_enhanced_tx_data(s);
         break;
     default:
         g_assert_not_reached();
     }
 
     if (s->remaining_frames == 0) {
-        s->phase = K230_DW_SSI_PHASE_IDLE;
+        s->phase = DW_SSI_PHASE_IDLE;
     }
 }
 
-static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
+static void dw_ssi_run_transfer(DwSsiState *s)
 {
     uint32_t spi_frf;
     uint32_t tmod;
 
-    if (!k230_dw_ssi_enabled(s) || s->active_cs < 0) {
+    if (!dw_ssi_enabled(s) || s->active_cs < 0) {
         return;
     }
 
     spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
     if (spi_frf != 0) {
-        k230_dw_ssi_run_enhanced_transfer(s);
+        dw_ssi_run_enhanced_transfer(s);
         return;
     }
 
     tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
 
     switch (tmod) {
-    case K230_DW_SSI_TMOD_TR:
+    case DW_SSI_TMOD_TR:
         while (!fifo32_is_empty(&s->tx_fifo)) {
             uint32_t tx = fifo32_pop(&s->tx_fifo);
-            uint32_t rx = k230_dw_ssi_send_frame(s, tx);
+            uint32_t rx = dw_ssi_send_frame(s, tx);
 
             if (!fifo32_is_full(&s->rx_fifo)) {
                 fifo32_push(&s->rx_fifo, rx);
@@ -1116,83 +1112,83 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
             }
         }
         break;
-    case K230_DW_SSI_TMOD_TO: {
+    case DW_SSI_TMOD_TO: {
         unsigned int frames = 0;
 
         if (fifo32_is_empty(&s->tx_fifo)) {
-            s->phase = K230_DW_SSI_PHASE_IDLE;
+            s->phase = DW_SSI_PHASE_IDLE;
             break;
         }
 
-        s->phase = K230_DW_SSI_PHASE_STANDARD_TX_ONLY;
+        s->phase = DW_SSI_PHASE_STANDARD_TX_ONLY;
         while (!fifo32_is_empty(&s->tx_fifo) &&
-               frames < K230_DW_SSI_PIO_TX_BATCH) {
+               frames < DW_SSI_PIO_TX_BATCH) {
             uint32_t tx = fifo32_pop(&s->tx_fifo);
 
-            k230_dw_ssi_send_frame(s, tx);
+            dw_ssi_send_frame(s, tx);
             frames++;
         }
         if (fifo32_is_empty(&s->tx_fifo)) {
-            s->phase = K230_DW_SSI_PHASE_IDLE;
+            s->phase = DW_SSI_PHASE_IDLE;
         }
         break;
     }
-    case K230_DW_SSI_TMOD_RO:
+    case DW_SSI_TMOD_RO:
         switch (s->phase) {
-        case K230_DW_SSI_PHASE_IDLE:
+        case DW_SSI_PHASE_IDLE:
             if (fifo32_is_empty(&s->tx_fifo)) {
                 break;
             }
             fifo32_pop(&s->tx_fifo);
-            s->phase = K230_DW_SSI_PHASE_RX_ONLY;
+            s->phase = DW_SSI_PHASE_RX_ONLY;
             s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
                                               NDF) + 1;
             /* Fall through. */
-        case K230_DW_SSI_PHASE_RX_ONLY:
+        case DW_SSI_PHASE_RX_ONLY:
             while (!fifo32_is_full(&s->rx_fifo) &&
                    s->remaining_frames > 0) {
-                uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+                uint32_t rx = dw_ssi_send_frame(s, 0x00);
 
                 fifo32_push(&s->rx_fifo, rx);
                 s->remaining_frames--;
             }
             if (s->remaining_frames == 0) {
-                s->phase = K230_DW_SSI_PHASE_IDLE;
+                s->phase = DW_SSI_PHASE_IDLE;
             }
             break;
         }
         break;
-    case K230_DW_SSI_TMOD_EEPROM_READ:
+    case DW_SSI_TMOD_EEPROM_READ:
         switch (s->phase) {
-        case K230_DW_SSI_PHASE_IDLE:
+        case DW_SSI_PHASE_IDLE:
             if (fifo32_is_empty(&s->tx_fifo)) {
                 break;
             }
-            s->phase = K230_DW_SSI_PHASE_EEPROM_COMMAND;
+            s->phase = DW_SSI_PHASE_EEPROM_COMMAND;
             /* Fall through. */
-        case K230_DW_SSI_PHASE_EEPROM_COMMAND:
+        case DW_SSI_PHASE_EEPROM_COMMAND:
             if (fifo32_is_empty(&s->tx_fifo)) {
                 break;
             }
             while (!fifo32_is_empty(&s->tx_fifo)) {
                 uint32_t tx = fifo32_pop(&s->tx_fifo);
 
-                k230_dw_ssi_send_frame(s, tx);
+                dw_ssi_send_frame(s, tx);
             }
-            s->phase = K230_DW_SSI_PHASE_EEPROM_DATA;
+            s->phase = DW_SSI_PHASE_EEPROM_DATA;
             s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
                                               NDF) + 1;
             /* Fall through. */
-        case K230_DW_SSI_PHASE_EEPROM_DATA:
+        case DW_SSI_PHASE_EEPROM_DATA:
             while (!fifo32_is_full(&s->rx_fifo) &&
                    s->remaining_frames > 0) {
-                uint32_t rx = k230_dw_ssi_send_frame(s, 0x00);
+                uint32_t rx = dw_ssi_send_frame(s, 0x00);
 
                 fifo32_push(&s->rx_fifo, rx);
                 s->remaining_frames--;
             }
             if (s->remaining_frames == 0) {
-                s->phase = K230_DW_SSI_PHASE_IDLE;
+                s->phase = DW_SSI_PHASE_IDLE;
             }
             break;
         }
@@ -1202,13 +1198,13 @@ static void k230_dw_ssi_run_transfer(K230DwSsiState *s)
     }
 }
 
-static bool k230_dw_ssi_is_dr(hwaddr addr)
+static bool dw_ssi_is_dr(hwaddr addr)
 {
     return addr >= A_DR0 && addr <= A_DR_END &&
            (addr & 0x3) == 0;
 }
 
-static bool k230_dw_ssi_is_razwi(hwaddr addr)
+static bool dw_ssi_is_razwi(hwaddr addr)
 {
     switch (addr) {
     case A_XIP_CTRL:
@@ -1228,7 +1224,7 @@ static bool k230_dw_ssi_is_razwi(hwaddr addr)
     }
 }
 
-static bool k230_dw_ssi_write_requires_disabled(hwaddr addr)
+static bool dw_ssi_write_requires_disabled(hwaddr addr)
 {
     switch (addr) {
     case A_CTRLR0:
@@ -1242,30 +1238,30 @@ static bool k230_dw_ssi_write_requires_disabled(hwaddr addr)
     }
 }
 
-static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
+static uint64_t dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
 {
-    K230DwSsiState *s = K230_DW_SSI(opaque);
+    DwSsiState *s = DW_SSI(opaque);
     uint32_t value = 0;
 
-    if (k230_dw_ssi_is_dr(addr)) {
-        if (k230_dw_ssi_idma_enabled(s)) {
+    if (dw_ssi_is_dr(addr)) {
+        if (dw_ssi_idma_enabled(s)) {
             return 0;
         }
 
         if (!fifo32_is_empty(&s->rx_fifo)) {
-            value = fifo32_pop(&s->rx_fifo) & k230_dw_ssi_frame_masked(s);
+            value = fifo32_pop(&s->rx_fifo) & dw_ssi_frame_masked(s);
         } else {
             value = 0;
             s->irq_latched |= R_RISR_RXUIR_MASK;
         }
 
-        k230_dw_ssi_run_transfer(s);
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_run_transfer(s);
+        dw_ssi_update_irq(s);
         return value;
     }
 
-    if (k230_dw_ssi_is_razwi(addr)) {
-        trace_k230_dw_ssi_reg_read(s, addr, 0);
+    if (dw_ssi_is_razwi(addr)) {
+        trace_dw_ssi_reg_read(s, addr, 0);
         return 0;
     }
 
@@ -1300,54 +1296,54 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case A_TXFLR:
         value = fifo32_num_used(&s->tx_fifo);
-        if (s->phase == K230_DW_SSI_PHASE_STANDARD_TX_ONLY) {
-            k230_dw_ssi_run_transfer(s);
-            k230_dw_ssi_update_irq(s);
+        if (s->phase == DW_SSI_PHASE_STANDARD_TX_ONLY) {
+            dw_ssi_run_transfer(s);
+            dw_ssi_update_irq(s);
         }
         break;
     case A_RXFLR:
         value = fifo32_num_used(&s->rx_fifo);
         break;
     case A_SR:
-        value = k230_dw_ssi_status(s);
-        if (s->phase == K230_DW_SSI_PHASE_STANDARD_TX_ONLY) {
-            k230_dw_ssi_run_transfer(s);
-            k230_dw_ssi_update_irq(s);
+        value = dw_ssi_status(s);
+        if (s->phase == DW_SSI_PHASE_STANDARD_TX_ONLY) {
+            dw_ssi_run_transfer(s);
+            dw_ssi_update_irq(s);
         }
         break;
     case A_ISR:
-        value = k230_dw_ssi_irq_raw_status(s) & s->regs[R_IMR] &
-                K230_DW_SSI_IRQ_VALID_MASK;
+        value = dw_ssi_irq_raw_status(s) & s->regs[R_IMR] &
+                DW_SSI_IRQ_VALID_MASK;
         break;
     case A_RISR:
-        value = k230_dw_ssi_irq_raw_status(s);
+        value = dw_ssi_irq_raw_status(s);
         break;
     case A_TXEICR:
-        value = k230_dw_ssi_irq_read_clear(
+        value = dw_ssi_irq_read_clear(
             s, R_RISR_TXOIR_MASK | R_RISR_TXUIR_MASK);
         break;
     case A_RXOICR:
-        value = k230_dw_ssi_irq_read_clear(s, R_RISR_RXOIR_MASK);
+        value = dw_ssi_irq_read_clear(s, R_RISR_RXOIR_MASK);
         break;
     case A_RXUICR:
-        value = k230_dw_ssi_irq_read_clear(s, R_RISR_RXUIR_MASK);
+        value = dw_ssi_irq_read_clear(s, R_RISR_RXUIR_MASK);
         break;
     case A_MSTICR:
-        value = k230_dw_ssi_irq_read_clear(s, R_RISR_MSTIR_MASK);
+        value = dw_ssi_irq_read_clear(s, R_RISR_MSTIR_MASK);
         break;
     case A_ICR:
-        value = k230_dw_ssi_irq_read_clear(
+        value = dw_ssi_irq_read_clear(
             s, R_RISR_TXOIR_MASK | R_RISR_RXUIR_MASK |
                R_RISR_RXOIR_MASK | R_RISR_MSTIR_MASK);
         break;
     case A_AXIECR:
-        value = k230_dw_ssi_irq_read_clear(s, R_RISR_AXIER_MASK);
+        value = dw_ssi_irq_read_clear(s, R_RISR_AXIER_MASK);
         break;
     case A_DONECR:
-        value = k230_dw_ssi_irq_read_clear(s, R_RISR_DONER_MASK);
+        value = dw_ssi_irq_read_clear(s, R_RISR_DONER_MASK);
         break;
     default:
-        if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
+        if (addr >= DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: bad read offset 0x%" HWADDR_PRIx "\n",
                           DEVICE(s)->canonical_path, addr);
@@ -1355,31 +1351,31 @@ static uint64_t k230_dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     }
 
-    trace_k230_dw_ssi_reg_read(s, addr, value);
+    trace_dw_ssi_reg_read(s, addr, value);
     return value;
 }
 
-static void k230_dw_ssi_write(void *opaque, hwaddr addr,
+static void dw_ssi_write(void *opaque, hwaddr addr,
                               uint64_t value, unsigned int size)
 {
-    K230DwSsiState *s = K230_DW_SSI(opaque);
+    DwSsiState *s = DW_SSI(opaque);
 
-    if (k230_dw_ssi_is_dr(addr)) {
-        if (k230_dw_ssi_idma_enabled(s)) {
+    if (dw_ssi_is_dr(addr)) {
+        if (dw_ssi_idma_enabled(s)) {
             return;
         }
 
-        k230_dw_ssi_push_tx(s, value);
+        dw_ssi_push_tx(s, value);
         return;
     }
 
-    if (k230_dw_ssi_is_razwi(addr)) {
-        trace_k230_dw_ssi_reg_write(s, addr, 0);
+    if (dw_ssi_is_razwi(addr)) {
+        trace_dw_ssi_reg_write(s, addr, 0);
         return;
     }
 
-    if (k230_dw_ssi_write_requires_disabled(addr) &&
-        k230_dw_ssi_enabled(s)) {
+    if (dw_ssi_write_requires_disabled(addr) &&
+        dw_ssi_enabled(s)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: write to offset 0x%" HWADDR_PRIx
                       " while SSI is enabled\n",
@@ -1389,85 +1385,85 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
 
     switch (addr) {
     case A_CTRLR0:
-        k230_dw_ssi_write_masked(s, R_CTRLR0, value,
-                                 K230_DW_SSI_CTRLR0_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_CTRLR0, value,
+                                 DW_SSI_CTRLR0_WRITABLE_MASK);
         break;
     case A_CTRLR1:
-        k230_dw_ssi_write_masked(s, R_CTRLR1, value,
-                                 K230_DW_SSI_CTRLR1_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_CTRLR1, value,
+                                 DW_SSI_CTRLR1_WRITABLE_MASK);
         break;
     case A_SSIENR: {
-        bool old_enabled = k230_dw_ssi_enabled(s);
+        bool old_enabled = dw_ssi_enabled(s);
         bool new_enabled = value & R_SSIENR_SSIC_EN_MASK;
 
         if (old_enabled == new_enabled) {
-            trace_k230_dw_ssi_reg_write(s, addr, s->regs[R_SSIENR]);
+            trace_dw_ssi_reg_write(s, addr, s->regs[R_SSIENR]);
             return;
         }
 
         s->regs[R_SSIENR] = FIELD_DP32(0, SSIENR, SSIC_EN, new_enabled);
-        trace_k230_dw_ssi_reg_write(s, addr, s->regs[R_SSIENR]);
+        trace_dw_ssi_reg_write(s, addr, s->regs[R_SSIENR]);
         if (!new_enabled) {
-            k230_dw_ssi_abort_transfer(s);
+            dw_ssi_abort_transfer(s);
             s->sleep_status = true;
             return;
         }
 
         s->sleep_status = false;
-        k230_dw_ssi_update_cs(s);
-        if (k230_dw_ssi_idma_enabled(s)) {
-            k230_dw_ssi_try_idma(s);
+        dw_ssi_update_cs(s);
+        if (dw_ssi_idma_enabled(s)) {
+            dw_ssi_try_idma(s);
         } else {
-            k230_dw_ssi_run_transfer(s);
+            dw_ssi_run_transfer(s);
         }
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_update_irq(s);
         break;
     }
     case A_MWCR:
-        k230_dw_ssi_write_masked(s, R_MWCR, value,
-                                 K230_DW_SSI_MWCR_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_MWCR, value,
+                                 DW_SSI_MWCR_WRITABLE_MASK);
         break;
     case A_SER: {
         uint32_t old_ser = s->regs[R_SER];
 
         s->regs[R_SER] = value & MAKE_64BIT_MASK(0, s->num_cs);
-        trace_k230_dw_ssi_reg_write(s, addr, s->regs[R_SER]);
+        trace_dw_ssi_reg_write(s, addr, s->regs[R_SER]);
         if (old_ser && !s->regs[R_SER]) {
-            k230_dw_ssi_abort_transfer(s);
+            dw_ssi_abort_transfer(s);
             break;
         }
 
-        k230_dw_ssi_update_cs(s);
-        if (k230_dw_ssi_idma_enabled(s)) {
-            k230_dw_ssi_try_idma(s);
+        dw_ssi_update_cs(s);
+        if (dw_ssi_idma_enabled(s)) {
+            dw_ssi_try_idma(s);
         } else {
-            k230_dw_ssi_run_transfer(s);
+            dw_ssi_run_transfer(s);
         }
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_update_irq(s);
         break;
     }
     case A_BAUDR:
-        k230_dw_ssi_write_masked(s, R_BAUDR, value,
-                                 K230_DW_SSI_BAUDR_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_BAUDR, value,
+                                 DW_SSI_BAUDR_WRITABLE_MASK);
         break;
     case A_TXFTLR:
-        k230_dw_ssi_write_masked(s, R_TXFTLR, value,
-                                 K230_DW_SSI_TXFTLR_WRITABLE_MASK);
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_write_masked(s, R_TXFTLR, value,
+                                 DW_SSI_TXFTLR_WRITABLE_MASK);
+        dw_ssi_update_irq(s);
         break;
     case A_RXFTLR:
-        k230_dw_ssi_write_masked(s, R_RXFTLR, value,
-                                 K230_DW_SSI_RXFTLR_WRITABLE_MASK);
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_write_masked(s, R_RXFTLR, value,
+                                 DW_SSI_RXFTLR_WRITABLE_MASK);
+        dw_ssi_update_irq(s);
         break;
     case A_TXFLR:
     case A_RXFLR:
     case A_SR:
         break;
     case A_IMR:
-        k230_dw_ssi_write_masked(s, R_IMR, value,
-                                 K230_DW_SSI_IMR_WRITABLE_MASK);
-        k230_dw_ssi_update_irq(s);
+        dw_ssi_write_masked(s, R_IMR, value,
+                                 DW_SSI_IMR_WRITABLE_MASK);
+        dw_ssi_update_irq(s);
         break;
     case A_ISR:
     case A_RISR:
@@ -1479,72 +1475,72 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     case A_ICR:
         break;
     case A_DMACR:
-        k230_dw_ssi_write_masked(s, R_DMACR, value,
-                                 K230_DW_SSI_DMACR_WRITABLE_MASK);
-        k230_dw_ssi_try_idma(s);
+        dw_ssi_write_masked(s, R_DMACR, value,
+                                 DW_SSI_DMACR_WRITABLE_MASK);
+        dw_ssi_try_idma(s);
         break;
     case A_AXIAWLEN:
-        k230_dw_ssi_write_masked(s, R_AXIAWLEN, value,
-                                 K230_DW_SSI_AXIAWLEN_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_AXIAWLEN, value,
+                                 DW_SSI_AXIAWLEN_WRITABLE_MASK);
         break;
     case A_AXIARLEN:
-        k230_dw_ssi_write_masked(s, R_AXIARLEN, value,
-                                 K230_DW_SSI_AXIARLEN_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_AXIARLEN, value,
+                                 DW_SSI_AXIARLEN_WRITABLE_MASK);
         break;
     case A_IDR:
     case A_SSIC_VERSION_ID:
         break;
     case A_RX_SAMPLE_DELAY:
-        k230_dw_ssi_write_masked(
+        dw_ssi_write_masked(
             s, R_RX_SAMPLE_DELAY, value,
-            K230_DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK);
+            DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK);
         break;
     case A_SPI_CTRLR0:
-        k230_dw_ssi_write_masked(
+        dw_ssi_write_masked(
             s, R_SPI_CTRLR0, value,
-            K230_DW_SSI_SPI_CTRLR0_WRITABLE_MASK);
+            DW_SSI_SPI_CTRLR0_WRITABLE_MASK);
         break;
     case A_DDR_DRIVE_EDGE:
-        k230_dw_ssi_write_masked(
+        dw_ssi_write_masked(
             s, R_DDR_DRIVE_EDGE, value,
-            K230_DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK);
+            DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK);
         break;
     case A_XIP_MODE_BITS:
-        k230_dw_ssi_write_masked(
+        dw_ssi_write_masked(
             s, R_XIP_MODE_BITS, value,
-            K230_DW_SSI_XIP_MODE_BITS_WRITABLE_MASK);
+            DW_SSI_XIP_MODE_BITS_WRITABLE_MASK);
         break;
     case A_XIP_INCR_INST:
-        k230_dw_ssi_write_masked(
+        dw_ssi_write_masked(
             s, R_XIP_INCR_INST, value,
-            K230_DW_SSI_XIP_INCR_INST_WRITABLE_MASK);
+            DW_SSI_XIP_INCR_INST_WRITABLE_MASK);
         break;
     case A_XIP_WRAP_INST:
-        k230_dw_ssi_write_masked(
+        dw_ssi_write_masked(
             s, R_XIP_WRAP_INST, value,
-            K230_DW_SSI_XIP_WRAP_INST_WRITABLE_MASK);
+            DW_SSI_XIP_WRAP_INST_WRITABLE_MASK);
         break;
     case A_SPIDR:
-        k230_dw_ssi_write_masked(s, R_SPIDR, value,
-                                 K230_DW_SSI_SPIDR_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_SPIDR, value,
+                                 DW_SSI_SPIDR_WRITABLE_MASK);
         break;
     case A_SPIAR:
-        k230_dw_ssi_write_masked(s, R_SPIAR, value,
-                                 K230_DW_SSI_SPIAR_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_SPIAR, value,
+                                 DW_SSI_SPIAR_WRITABLE_MASK);
         break;
     case A_AXIAR0:
-        k230_dw_ssi_write_masked(s, R_AXIAR0, value,
-                                 K230_DW_SSI_AXIAR0_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_AXIAR0, value,
+                                 DW_SSI_AXIAR0_WRITABLE_MASK);
         break;
     case A_AXIAR1:
-        k230_dw_ssi_write_masked(s, R_AXIAR1, value,
-                                 K230_DW_SSI_AXIAR1_WRITABLE_MASK);
+        dw_ssi_write_masked(s, R_AXIAR1, value,
+                                 DW_SSI_AXIAR1_WRITABLE_MASK);
         break;
     case A_AXIECR:
     case A_DONECR:
         break;
     default:
-        if (addr >= K230_DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
+        if (addr >= DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: bad write offset 0x%" HWADDR_PRIx "\n",
                           DEVICE(s)->canonical_path, addr);
@@ -1553,9 +1549,9 @@ static void k230_dw_ssi_write(void *opaque, hwaddr addr,
     }
 }
 
-static const MemoryRegionOps k230_dw_ssi_ops = {
-    .read = k230_dw_ssi_read,
-    .write = k230_dw_ssi_write,
+static const MemoryRegionOps dw_ssi_ops = {
+    .read = dw_ssi_read,
+    .write = dw_ssi_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
         .min_access_size = 4,
@@ -1569,37 +1565,37 @@ static const MemoryRegionOps k230_dw_ssi_ops = {
     },
 };
 
-static void k230_dw_ssi_enter_reset(Object *obj, ResetType type)
+static void dw_ssi_enter_reset(Object *obj, ResetType type)
 {
-    K230DwSsiState *s = K230_DW_SSI(obj);
+    DwSsiState *s = DW_SSI(obj);
 
     memset(s->regs, 0, sizeof(s->regs));
     fifo32_reset(&s->tx_fifo);
     fifo32_reset(&s->rx_fifo);
-    s->phase = K230_DW_SSI_PHASE_IDLE;
+    s->phase = DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
     s->irq_latched = 0;
     s->idma_completed_frames = 0;
     memset(&s->enhanced, 0, sizeof(s->enhanced));
     s->sleep_status = false;
 
-    s->regs[R_CTRLR0] = K230_DW_SSI_CTRLR0_RESET;
-    s->regs[R_SR] = K230_DW_SSI_SR_RESET;
-    s->regs[R_IMR] = K230_DW_SSI_IMR_RESET;
-    s->regs[R_AXIAWLEN] = K230_DW_SSI_AXIAWLEN_RESET;
-    s->regs[R_AXIARLEN] = K230_DW_SSI_AXIARLEN_RESET;
-    s->regs[R_IDR] = K230_DW_SSI_IDR_RESET;
-    s->regs[R_SSIC_VERSION_ID] = K230_DW_SSI_VERSION;
+    s->regs[R_CTRLR0] = DW_SSI_CTRLR0_RESET;
+    s->regs[R_SR] = DW_SSI_SR_RESET;
+    s->regs[R_IMR] = DW_SSI_IMR_RESET;
+    s->regs[R_AXIAWLEN] = DW_SSI_AXIAWLEN_RESET;
+    s->regs[R_AXIARLEN] = DW_SSI_AXIARLEN_RESET;
+    s->regs[R_IDR] = DW_SSI_IDR_RESET;
+    s->regs[R_SSIC_VERSION_ID] = DW_SSI_VERSION;
     s->regs[R_SPI_CTRLR0] = s->max_lines == 8 ?
-        K230_DW_SSI_SPI_CTRLR0_FMC_RESET :
-        K230_DW_SSI_SPI_CTRLR0_SPI_RESET;
+        DW_SSI_SPI_CTRLR0_FMC_RESET :
+        DW_SSI_SPI_CTRLR0_SPI_RESET;
 
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
 }
 
-static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
+static void dw_ssi_hold_reset(Object *obj, ResetType type)
 {
-    K230DwSsiState *s = K230_DW_SSI(obj);
+    DwSsiState *s = DW_SSI(obj);
     s->active_cs = -1;
 
     if (s->cs_lines) {
@@ -1609,16 +1605,16 @@ static void k230_dw_ssi_hold_reset(Object *obj, ResetType type)
     }
 }
 
-static void k230_dw_ssi_exit_reset(Object *obj, ResetType type)
+static void dw_ssi_exit_reset(Object *obj, ResetType type)
 {
-    K230DwSsiState *s = K230_DW_SSI(obj);
+    DwSsiState *s = DW_SSI(obj);
 
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
 }
 
-static int k230_dw_ssi_post_load(void *opaque, int version_id)
+static int dw_ssi_post_load(void *opaque, int version_id)
 {
-    K230DwSsiState *s = opaque;
+    DwSsiState *s = opaque;
 
     if (s->active_cs < -1 || s->active_cs >= (int)s->num_cs) {
         return -EINVAL;
@@ -1631,68 +1627,68 @@ static int k230_dw_ssi_post_load(void *opaque, int version_id)
         qemu_irq_lower(s->cs_lines[s->active_cs]);
     }
 
-    k230_dw_ssi_update_irq(s);
+    dw_ssi_update_irq(s);
     return 0;
 }
 
-static const VMStateDescription vmstate_k230_dw_ssi = {
-    .name = TYPE_K230_DW_SSI,
-    .post_load = k230_dw_ssi_post_load,
+static const VMStateDescription vmstate_dw_ssi = {
+    .name = TYPE_DW_SSI,
+    .post_load = dw_ssi_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(regs, K230DwSsiState, K230_DW_SSI_NUM_REGS),
-        VMSTATE_FIFO32(tx_fifo, K230DwSsiState),
-        VMSTATE_FIFO32(rx_fifo, K230DwSsiState),
-        VMSTATE_UINT32(irq_latched, K230DwSsiState),
-        VMSTATE_UINT32(idma_completed_frames, K230DwSsiState),
-        VMSTATE_UINT32(phase, K230DwSsiState),
-        VMSTATE_UINT32(remaining_frames, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.instruction, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.address, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.mode, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.mode_bits, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.instruction_bits, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.address_bits, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.wait_cycles, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.data_frames, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.spi_frf, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.trans_type, K230DwSsiState),
-        VMSTATE_UINT32(enhanced.tmod, K230DwSsiState),
-        VMSTATE_BOOL(enhanced.mode_bits_enabled, K230DwSsiState),
-        VMSTATE_INT32(active_cs, K230DwSsiState),
-        VMSTATE_BOOL(sleep_status, K230DwSsiState),
+        VMSTATE_UINT32_ARRAY(regs, DwSsiState, DW_SSI_NUM_REGS),
+        VMSTATE_FIFO32(tx_fifo, DwSsiState),
+        VMSTATE_FIFO32(rx_fifo, DwSsiState),
+        VMSTATE_UINT32(irq_latched, DwSsiState),
+        VMSTATE_UINT32(idma_completed_frames, DwSsiState),
+        VMSTATE_UINT32(phase, DwSsiState),
+        VMSTATE_UINT32(remaining_frames, DwSsiState),
+        VMSTATE_UINT32(enhanced.instruction, DwSsiState),
+        VMSTATE_UINT32(enhanced.address, DwSsiState),
+        VMSTATE_UINT32(enhanced.mode, DwSsiState),
+        VMSTATE_UINT32(enhanced.mode_bits, DwSsiState),
+        VMSTATE_UINT32(enhanced.instruction_bits, DwSsiState),
+        VMSTATE_UINT32(enhanced.address_bits, DwSsiState),
+        VMSTATE_UINT32(enhanced.wait_cycles, DwSsiState),
+        VMSTATE_UINT32(enhanced.data_frames, DwSsiState),
+        VMSTATE_UINT32(enhanced.spi_frf, DwSsiState),
+        VMSTATE_UINT32(enhanced.trans_type, DwSsiState),
+        VMSTATE_UINT32(enhanced.tmod, DwSsiState),
+        VMSTATE_BOOL(enhanced.mode_bits_enabled, DwSsiState),
+        VMSTATE_INT32(active_cs, DwSsiState),
+        VMSTATE_BOOL(sleep_status, DwSsiState),
         VMSTATE_END_OF_LIST()
     },
 };
 
-static void k230_dw_ssi_init(Object *obj)
+static void dw_ssi_init(Object *obj)
 {
-    K230DwSsiState *s = K230_DW_SSI(obj);
+    DwSsiState *s = DW_SSI(obj);
     DeviceState *dev = DEVICE(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
     s->spi = ssi_create_bus(dev, "spi");
 
-    memory_region_init_io(&s->mmio, obj, &k230_dw_ssi_ops, s,
-                          TYPE_K230_DW_SSI, K230_DW_SSI_MMIO_SIZE);
+    memory_region_init_io(&s->mmio, obj, &dw_ssi_ops, s,
+                          TYPE_DW_SSI, DW_SSI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->mmio);
 
-    memory_region_init_io(&s->xip, obj, &k230_dw_ssi_xip_ops, s,
-                          TYPE_K230_DW_SSI ".xip",
-                          K230_DW_SSI_XIP_WINDOW_SIZE);
+    memory_region_init_io(&s->xip, obj, &dw_ssi_xip_ops, s,
+                          TYPE_DW_SSI ".xip",
+                          DW_SSI_XIP_WINDOW_SIZE);
     sysbus_init_mmio(sbd, &s->xip);
 
-    for (int i = 0; i < K230_DW_SSI_IRQ_COUNT; i++) {
+    for (int i = 0; i < DW_SSI_IRQ_COUNT; i++) {
         sysbus_init_irq(sbd, &s->irqs[i]);
     }
 
-    fifo32_create(&s->tx_fifo, K230_DW_SSI_FIFO_CAPACITY);
-    fifo32_create(&s->rx_fifo, K230_DW_SSI_FIFO_CAPACITY);
+    fifo32_create(&s->tx_fifo, DW_SSI_FIFO_CAPACITY);
+    fifo32_create(&s->rx_fifo, DW_SSI_FIFO_CAPACITY);
     s->active_cs = -1;
 }
 
-static void k230_dw_ssi_realize(DeviceState *dev, Error **errp)
+static void dw_ssi_realize(DeviceState *dev, Error **errp)
 {
-    K230DwSsiState *s = K230_DW_SSI(dev);
+    DwSsiState *s = DW_SSI(dev);
 
     if (s->num_cs == 0 || s->num_cs > 8) {
         error_setg(errp, "%s: num-cs must be in range 1..8",
@@ -1710,45 +1706,45 @@ static void k230_dw_ssi_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_out_named(dev, s->cs_lines, "cs", s->num_cs);
 }
 
-static void k230_dw_ssi_finalize(Object *obj)
+static void dw_ssi_finalize(Object *obj)
 {
-    K230DwSsiState *s = K230_DW_SSI(obj);
+    DwSsiState *s = DW_SSI(obj);
 
     fifo32_destroy(&s->tx_fifo);
     fifo32_destroy(&s->rx_fifo);
     g_free(s->cs_lines);
 }
 
-static const Property k230_dw_ssi_properties[] = {
-    DEFINE_PROP_UINT32("num-cs", K230DwSsiState, num_cs, 1),
-    DEFINE_PROP_UINT32("max-lines", K230DwSsiState, max_lines, 1),
+static const Property dw_ssi_properties[] = {
+    DEFINE_PROP_UINT32("num-cs", DwSsiState, num_cs, 1),
+    DEFINE_PROP_UINT32("max-lines", DwSsiState, max_lines, 1),
 };
 
-static void k230_dw_ssi_class_init(ObjectClass *klass, const void *data)
+static void dw_ssi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->realize = k230_dw_ssi_realize;
-    dc->vmsd = &vmstate_k230_dw_ssi;
-    device_class_set_props(dc, k230_dw_ssi_properties);
-    rc->phases.enter = k230_dw_ssi_enter_reset;
-    rc->phases.hold = k230_dw_ssi_hold_reset;
-    rc->phases.exit = k230_dw_ssi_exit_reset;
+    dc->realize = dw_ssi_realize;
+    dc->vmsd = &vmstate_dw_ssi;
+    device_class_set_props(dc, dw_ssi_properties);
+    rc->phases.enter = dw_ssi_enter_reset;
+    rc->phases.hold = dw_ssi_hold_reset;
+    rc->phases.exit = dw_ssi_exit_reset;
 }
 
-static const TypeInfo k230_dw_ssi_info = {
-    .name = TYPE_K230_DW_SSI,
+static const TypeInfo dw_ssi_info = {
+    .name = TYPE_DW_SSI,
     .parent = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(K230DwSsiState),
-    .instance_init = k230_dw_ssi_init,
-    .instance_finalize = k230_dw_ssi_finalize,
-    .class_init = k230_dw_ssi_class_init,
+    .instance_size = sizeof(DwSsiState),
+    .instance_init = dw_ssi_init,
+    .instance_finalize = dw_ssi_finalize,
+    .class_init = dw_ssi_class_init,
 };
 
-static void k230_dw_ssi_register_types(void)
+static void dw_ssi_register_types(void)
 {
-    type_register_static(&k230_dw_ssi_info);
+    type_register_static(&dw_ssi_info);
 }
 
-type_init(k230_dw_ssi_register_types)
+type_init(dw_ssi_register_types)
