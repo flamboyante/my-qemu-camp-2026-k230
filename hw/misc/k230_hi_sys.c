@@ -53,6 +53,12 @@ static uint32_t k230_hi_sys_ssi_status(const K230HiSysState *s)
     return value;
 }
 
+static void k230_hi_sys_update_xip_enable(K230HiSysState *s)
+{
+    qemu_set_irq(s->xip_enable_out,
+                 !!(s->ssi_ctrl & K230_SSI_CTRL_XIP_EN));
+}
+
 static uint64_t k230_hi_sys_read(void *opaque, hwaddr addr, unsigned size)
 {
     K230HiSysState *s = opaque;
@@ -80,6 +86,8 @@ static void k230_hi_sys_write(void *opaque, hwaddr addr, uint64_t value,
         s->ssi_ctrl = (s->ssi_ctrl & ~K230_SSI_CTRL_WRITABLE_MASK) |
                       ((uint32_t)value & K230_SSI_CTRL_WRITABLE_MASK);
         s->ssi_ctrl &= K230_SSI_CTRL_IMPLEMENTED_MASK;
+
+        k230_hi_sys_update_xip_enable(s);
         return;
     }
 
@@ -91,6 +99,8 @@ static void k230_hi_sys_write(void *opaque, hwaddr addr, uint64_t value,
                   "%s: write to invalid offset 0x%" HWADDR_PRIx "\n",
                   TYPE_K230_HI_SYS, addr);
 }
+
+
 
 static const MemoryRegionOps k230_hi_sys_ops = {
     .read = k230_hi_sys_read,
@@ -115,17 +125,15 @@ void k230_hi_sys_set_ssi(K230HiSysState *s, unsigned int index,
     s->ssi[index] = ssi;
 }
 
-bool k230_hi_sys_xip_enabled(const K230HiSysState *s)
-{
-    return !!(s->ssi_ctrl & K230_SSI_CTRL_XIP_EN);
-}
-
 static void k230_hi_sys_reset(Object *obj, ResetType type)
 {
     K230HiSysState *s = K230_HI_SYS(obj);
 
     s->ssi_ctrl = K230_SSI_CTRL_RESET;
+
+    k230_hi_sys_update_xip_enable(s);
 }
+
 
 static void k230_hi_sys_init(Object *obj)
 {
@@ -134,10 +142,21 @@ static void k230_hi_sys_init(Object *obj)
     memory_region_init_io(&s->mmio, obj, &k230_hi_sys_ops, s,
                           TYPE_K230_HI_SYS, K230_HI_SYS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+
+    qdev_init_gpio_out_named(DEVICE(obj), &s->xip_enable_out,"xip-enable", 1);
 }
+
+static int k230_hi_sys_post_load(void *opaque, int version_id)
+{
+    K230HiSysState *s = opaque;
+    k230_hi_sys_update_xip_enable(s);
+    return 0;
+}
+
 
 static const VMStateDescription vmstate_k230_hi_sys = {
     .name = TYPE_K230_HI_SYS,
+    .post_load = k230_hi_sys_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ssi_ctrl, K230HiSysState),
         VMSTATE_END_OF_LIST()

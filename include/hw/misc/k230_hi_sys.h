@@ -20,7 +20,9 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/ssi/dw_ssi.h"
+#include "hw/core/irq.h"
 #include "qom/object.h"
+
 
 #define TYPE_K230_HI_SYS "riscv.k230.hi-sys"
 OBJECT_DECLARE_SIMPLE_TYPE(K230HiSysState, K230_HI_SYS)
@@ -45,6 +47,7 @@ struct K230HiSysState {
 
     MemoryRegion mmio;
     uint32_t ssi_ctrl;
+    qemu_irq xip_enable_out;
     DwSsiState *ssi[3];
 };
 

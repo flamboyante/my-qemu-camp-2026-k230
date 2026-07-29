@@ -78,7 +78,7 @@ struct DwSsiState {
     MemoryRegion mmio;
     MemoryRegion xip;
     SSIBus *spi;
-    K230HiSysState *hi_sys;
+
     qemu_irq *cs_lines;
     qemu_irq irqs[DW_SSI_IRQ_COUNT];
 
@@ -97,10 +97,10 @@ struct DwSsiState {
     uint32_t max_lines;
     int active_cs;
     bool sleep_status;
+    bool xip_enabled;
 };
 
 uint32_t dw_ssi_get_spi_mode(const DwSsiState *s);
 bool dw_ssi_is_sleeping(const DwSsiState *s);
-void dw_ssi_set_hi_sys(DwSsiState *s, K230HiSysState *hi_sys);
 
 #endif /* HW_SSI_DW_SSI_H */

@@ -263,8 +263,9 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
                             &s->dw_ssi[route->ssi_index]);
         if (logical_index == 0) {
-            dw_ssi_set_hi_sys(&s->dw_ssi[route->ssi_index],
-                                   &s->hi_sys);
+            qdev_connect_gpio_out_named(DEVICE(&s->hi_sys), "xip-enable", 0,
+            qdev_get_gpio_in_named(DEVICE(&s->dw_ssi[route->ssi_index]),
+                                   "xip-enable", 0));
         }
     }
 

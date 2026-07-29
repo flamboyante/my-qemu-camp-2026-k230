@@ -15,7 +15,6 @@
 #include "hw/core/registerfields.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
-#include "hw/misc/k230_hi_sys.h"
 #include "hw/ssi/dw_ssi.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -346,11 +345,6 @@ uint32_t dw_ssi_get_spi_mode(const DwSsiState *s)
 bool dw_ssi_is_sleeping(const DwSsiState *s)
 {
     return s->sleep_status;
-}
-
-void dw_ssi_set_hi_sys(DwSsiState *s, K230HiSysState *hi_sys)
-{
-    s->hi_sys = hi_sys;
 }
 
 static void dw_ssi_deselect(DwSsiState *s)
@@ -744,7 +738,7 @@ static uint64_t dw_ssi_xip_read(void *opaque, hwaddr address,
     uint64_t value = 0;
     uint32_t dummy_bytes;
 
-    if (!s->hi_sys || !k230_hi_sys_xip_enabled(s->hi_sys)) {
+    if (!s->xip_enabled) {
         return 0;
     }
 
@@ -1631,6 +1625,13 @@ static int dw_ssi_post_load(void *opaque, int version_id)
     return 0;
 }
 
+
+static void dw_ssi_xip_enable_handler(void *opaque, int n, int level)
+{
+    DwSsiState *s = DW_SSI(opaque);
+    s->xip_enabled = (level != 0);
+}
+
 static const VMStateDescription vmstate_dw_ssi = {
     .name = TYPE_DW_SSI,
     .post_load = dw_ssi_post_load,
@@ -1656,6 +1657,7 @@ static const VMStateDescription vmstate_dw_ssi = {
         VMSTATE_BOOL(enhanced.mode_bits_enabled, DwSsiState),
         VMSTATE_INT32(active_cs, DwSsiState),
         VMSTATE_BOOL(sleep_status, DwSsiState),
+        VMSTATE_BOOL(xip_enabled, DwSsiState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1680,6 +1682,8 @@ static void dw_ssi_init(Object *obj)
     for (int i = 0; i < DW_SSI_IRQ_COUNT; i++) {
         sysbus_init_irq(sbd, &s->irqs[i]);
     }
+
+    qdev_init_gpio_in_named(dev, dw_ssi_xip_enable_handler, "xip-enable", 1);
 
     fifo32_create(&s->tx_fifo, DW_SSI_FIFO_CAPACITY);
     fifo32_create(&s->rx_fifo, DW_SSI_FIFO_CAPACITY);
