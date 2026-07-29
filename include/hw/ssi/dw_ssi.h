@@ -27,8 +27,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(DwSsiState, DW_SSI)
     (DW_SSI_REGS_SIZE / sizeof(uint32_t))
 #define DW_SSI_XIP_WINDOW_SIZE 0x08000000
 
-typedef struct K230HiSysState K230HiSysState;
-
 /* SSI GPIO output ordering differs from RISR/ISR bit ordering. */
 typedef enum DwSsiIrq {
     DW_SSI_IRQ_TXE,

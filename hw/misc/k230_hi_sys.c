@@ -100,8 +100,6 @@ static void k230_hi_sys_write(void *opaque, hwaddr addr, uint64_t value,
                   TYPE_K230_HI_SYS, addr);
 }
 
-
-
 static const MemoryRegionOps k230_hi_sys_ops = {
     .read = k230_hi_sys_read,
     .write = k230_hi_sys_write,
@@ -143,7 +141,7 @@ static void k230_hi_sys_init(Object *obj)
                           TYPE_K230_HI_SYS, K230_HI_SYS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
 
-    qdev_init_gpio_out_named(DEVICE(obj), &s->xip_enable_out,"xip-enable", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->xip_enable_out, "xip-enable", 1);
 }
 
 static int k230_hi_sys_post_load(void *opaque, int version_id)
