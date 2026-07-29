@@ -434,6 +434,7 @@ static void read_enhanced_result(QTestState *qts, uint8_t *data, size_t len)
 }
 
 static void configure_idma(QTestState *qts, uint32_t tmod,
+                           uint32_t trans_type, uint32_t wait_cycles,
                            uint8_t opcode, uint32_t flash_address,
                            uint64_t dma_address, size_t length)
 {
@@ -445,10 +446,10 @@ static void configure_idma(QTestState *qts, uint32_t tmod,
     ctrlr0 = k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0);
     ctrlr0 |= K230_SSI_FRF_QUAD << K230_SSI_CTRLR0_SPI_FRF_SHIFT;
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_CTRLR0, ctrlr0);
-    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(0) |
+    spi_ctrlr0 = K230_SSI_SPI_CTRLR0_TRANS_TYPE(trans_type) |
                  K230_SSI_SPI_CTRLR0_ADDR_L(24) |
                  K230_SSI_SPI_CTRLR0_INST_L_8 |
-                 K230_SSI_SPI_CTRLR0_WAIT(8);
+                 K230_SSI_SPI_CTRLR0_WAIT(wait_cycles);
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_SPI_CTRLR0, spi_ctrlr0);
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_DMACR,
                     K230_SSI_IDMAE | K230_SSI_AINC);
@@ -748,6 +749,35 @@ static void test_qspi_sdr(void)
     k230_ssi_flash_image_clear(&image);
 }
 
+static void test_enhanced_xip_isolation(void)
+{
+    static const uint8_t expected[] = { 0xa5, 0x5a, 0x3c, 0xc3 };
+    K230SsiFlashImage image;
+    QTestState *qts = k230_ssi_start_with_flash(&image);
+    uint8_t baseline[ARRAY_SIZE(expected)];
+    uint8_t actual[ARRAY_SIZE(expected)];
+
+    configure_enhanced_transfer(qts, K230_SSI_TMOD_RO,
+                                K230_SSI_FRF_QUAD, 1, 6, false,
+                                ARRAY_SIZE(baseline));
+    start_enhanced_transfer(qts, FLASH_CMD_QUAD_IO,
+                            K230_SSI_FLASH_PATTERN_ADDR);
+    read_enhanced_result(qts, baseline, sizeof(baseline));
+    g_assert_cmpmem(baseline, sizeof(baseline), expected, sizeof(expected));
+
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_XIP_MODE_BITS, 0xff);
+    configure_enhanced_transfer(qts, K230_SSI_TMOD_RO,
+                                K230_SSI_FRF_QUAD, 1, 6, true,
+                                ARRAY_SIZE(actual));
+    start_enhanced_transfer(qts, FLASH_CMD_QUAD_IO,
+                            K230_SSI_FLASH_PATTERN_ADDR);
+    read_enhanced_result(qts, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), baseline, sizeof(baseline));
+
+    qtest_quit(qts);
+    k230_ssi_flash_image_clear(&image);
+}
+
 static void test_idma(void)
 {
     static const uint8_t expected[] = { 0xa5, 0x5a, 0x3c, 0xc3 };
@@ -757,7 +787,7 @@ static void test_idma(void)
 
     qtest_memset(qts, K230_SSI_DMA_ADDR, 0, sizeof(actual));
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_IMR, 0);
-    configure_idma(qts, K230_SSI_TMOD_RO, FLASH_CMD_QUAD_OUT,
+    configure_idma(qts, K230_SSI_TMOD_RO, 0, 8, FLASH_CMD_QUAD_OUT,
                    K230_SSI_FLASH_PATTERN_ADDR, K230_SSI_DMA_ADDR,
                    sizeof(actual));
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RISR) &
@@ -778,7 +808,7 @@ static void test_idma(void)
                     K230_SSI_INT_DONE, ==, 0);
 
     k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_IMR, 0);
-    configure_idma(qts, K230_SSI_TMOD_RO, FLASH_CMD_QUAD_OUT,
+    configure_idma(qts, K230_SSI_TMOD_RO, 0, 8, FLASH_CMD_QUAD_OUT,
                    K230_SSI_FLASH_PATTERN_ADDR, 0x100000000ULL,
                    sizeof(actual));
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RISR) &
@@ -793,6 +823,26 @@ static void test_idma(void)
                     ==, 1);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_RISR) &
                     K230_SSI_INT_AXIE, ==, 0);
+
+    qtest_quit(qts);
+    k230_ssi_flash_image_clear(&image);
+}
+
+static void test_idma_quad_io(void)
+{
+    static const uint8_t expected[] = { 0xa5, 0x5a, 0x3c, 0xc3 };
+    K230SsiFlashImage image;
+    QTestState *qts = k230_ssi_start_with_flash(&image);
+    uint8_t actual[ARRAY_SIZE(expected)];
+
+    qtest_memset(qts, K230_SSI_DMA_ADDR, 0, sizeof(actual));
+    k230_ssi_writel(qts, K230_SPI0_BASE, K230_SSI_XIP_MODE_BITS, 0xff);
+    configure_idma(qts, K230_SSI_TMOD_RO, 1, 6, FLASH_CMD_QUAD_IO,
+                   K230_SSI_FLASH_PATTERN_ADDR, K230_SSI_DMA_ADDR,
+                   sizeof(actual));
+    assert_idma_stopped(qts, sizeof(actual));
+    qtest_memread(qts, K230_SSI_DMA_ADDR, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
 
     qtest_quit(qts);
     k230_ssi_flash_image_clear(&image);
@@ -910,7 +960,10 @@ int main(int argc, char **argv)
     qtest_add_func("/k230-dw-ssi/qspi-config", test_qspi_config);
     qtest_add_func("/k230-dw-ssi/spi-nor", test_spi_nor);
     qtest_add_func("/k230-dw-ssi/qspi-sdr", test_qspi_sdr);
+    qtest_add_func("/k230-dw-ssi/enhanced-xip-isolation",
+                   test_enhanced_xip_isolation);
     qtest_add_func("/k230-dw-ssi/idma", test_idma);
+    qtest_add_func("/k230-dw-ssi/idma-quad-io", test_idma_quad_io);
     qtest_add_func("/k230-dw-ssi/hi-sys", test_hi_sys);
     qtest_add_func("/k230-dw-ssi/xip-read-window", test_xip_read_window);
     return g_test_run();

@@ -50,7 +50,6 @@ typedef enum DwSsiPhase {
 
     DW_SSI_PHASE_ENHANCED_INSTRUCTION,
     DW_SSI_PHASE_ENHANCED_ADDRESS,
-    DW_SSI_PHASE_ENHANCED_MODE,
     DW_SSI_PHASE_ENHANCED_DUMMY,
     DW_SSI_PHASE_ENHANCED_DATA,
 } DwSsiPhase;
@@ -58,15 +57,17 @@ typedef enum DwSsiPhase {
 typedef struct DwSsiEnhancedCommand {
     uint32_t instruction;
     uint32_t address;
-    uint32_t mode;
     uint32_t instruction_bits;
     uint32_t address_bits;
-    uint32_t mode_bits;
     uint32_t wait_cycles;
     uint32_t data_frames;
     uint32_t spi_frf;
     uint32_t trans_type;
     uint32_t tmod;
+
+    /* XIP-only fields; ordinary enhanced transfers do not consume them. */
+    uint32_t mode;
+    uint32_t mode_bits;
     bool mode_bits_enabled;
 } DwSsiEnhancedCommand;
 

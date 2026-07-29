@@ -544,9 +544,6 @@ static bool dw_ssi_decode_enhanced_command(
                                      SPI_CTRLR0, TRANS_TYPE);
     uint32_t inst_bits;
     uint32_t addr_bits = addr_l << 2;
-    uint32_t mode_bits = 0;
-    bool mode_bits_enabled =
-        FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, XIP_MD_BIT_EN);
 
     if (!dw_ssi_enhanced_config_supported(s)) {
         return false;
@@ -561,17 +558,8 @@ static bool dw_ssi_decode_enhanced_command(
         return false;
     }
 
-    if (mode_bits_enabled) {
-        uint32_t mode_length_encoding =
-            FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, XIP_MBL);
-
-        mode_bits = 1U << (mode_length_encoding + 1);
-    }
-
     command->instruction_bits = inst_bits;
     command->address_bits = addr_bits;
-    command->mode_bits = mode_bits;
-    command->mode_bits_enabled = mode_bits_enabled;
     command->wait_cycles =
         FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, WAIT_CYCLES);
     command->data_frames =
@@ -579,11 +567,6 @@ static bool dw_ssi_decode_enhanced_command(
     command->spi_frf = spi_frf;
     command->trans_type = trans_type;
     command->tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
-
-    if (mode_bits_enabled) {
-        command->mode = s->regs[R_XIP_MODE_BITS] &
-            (uint32_t)MAKE_64BIT_MASK(0, mode_bits);
-    }
 
     return true;
 }
@@ -943,18 +926,6 @@ static void dw_ssi_try_idma(DwSsiState *s)
         dw_ssi_send_enhanced_field(s, command.address,
                                          command.address_bits);
     }
-    if (command.mode_bits_enabled) {
-        dw_ssi_send_enhanced_field(s, command.mode,
-                                         command.mode_bits);
-    } else if (command.trans_type == 1 && command.wait_cycles >= 2) {
-        /*
-         * The SDK's 1-4-4 read supplies its mode byte through XIP_MODE_BITS
-         * without XIP_MD_BIT_EN; one Quad byte consumes two wait cycles.
-         */
-        dw_ssi_send_enhanced_field(s, s->regs[R_XIP_MODE_BITS], 8);
-        command.wait_cycles -= 2;
-    }
-
     dummy_bytes = dw_ssi_dummy_bytes(
         command.spi_frf, command.trans_type, command.wait_cycles);
     for (uint32_t i = 0; i < dummy_bytes; i++) {
@@ -1029,14 +1000,6 @@ static void dw_ssi_run_enhanced_transfer(DwSsiState *s)
         if (s->enhanced.address_bits != 0) {
             dw_ssi_send_enhanced_field(
                 s, s->enhanced.address, s->enhanced.address_bits);
-        }
-        s->phase = DW_SSI_PHASE_ENHANCED_MODE;
-    }
-
-    if (s->phase == DW_SSI_PHASE_ENHANCED_MODE) {
-        if (s->enhanced.mode_bits_enabled) {
-            dw_ssi_send_enhanced_field(
-                s, s->enhanced.mode, s->enhanced.mode_bits);
         }
         s->phase = DW_SSI_PHASE_ENHANCED_DUMMY;
     }
@@ -1645,8 +1608,6 @@ static const VMStateDescription vmstate_dw_ssi = {
         VMSTATE_UINT32(remaining_frames, DwSsiState),
         VMSTATE_UINT32(enhanced.instruction, DwSsiState),
         VMSTATE_UINT32(enhanced.address, DwSsiState),
-        VMSTATE_UINT32(enhanced.mode, DwSsiState),
-        VMSTATE_UINT32(enhanced.mode_bits, DwSsiState),
         VMSTATE_UINT32(enhanced.instruction_bits, DwSsiState),
         VMSTATE_UINT32(enhanced.address_bits, DwSsiState),
         VMSTATE_UINT32(enhanced.wait_cycles, DwSsiState),
@@ -1654,7 +1615,6 @@ static const VMStateDescription vmstate_dw_ssi = {
         VMSTATE_UINT32(enhanced.spi_frf, DwSsiState),
         VMSTATE_UINT32(enhanced.trans_type, DwSsiState),
         VMSTATE_UINT32(enhanced.tmod, DwSsiState),
-        VMSTATE_BOOL(enhanced.mode_bits_enabled, DwSsiState),
         VMSTATE_INT32(active_cs, DwSsiState),
         VMSTATE_BOOL(sleep_status, DwSsiState),
         VMSTATE_BOOL(xip_enabled, DwSsiState),
