@@ -262,12 +262,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
         k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
                             &s->dw_ssi[route->ssi_index]);
-        if (logical_index == 0) {
-            qdev_connect_gpio_out_named(
-                DEVICE(&s->hi_sys), "xip-enable", 0,
-                qdev_get_gpio_in_named(DEVICE(&s->dw_ssi[route->ssi_index]),
-                                   "xip-enable", 0));
-        }
     }
 
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->hi_sys), errp)) {
@@ -290,8 +284,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
                     memmap[K230_DEV_QSPI1].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 1,
-                    memmap[K230_DEV_FLASH].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->hi_sys), 0,
                     memmap[K230_DEV_HI_SYS_CFG].base);
 

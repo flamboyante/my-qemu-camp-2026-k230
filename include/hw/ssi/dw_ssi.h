@@ -5,8 +5,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Emulates the DesignWare SSI controllers, including standard SPI,
- * Dual/Quad SDR, internal DMA, and the XIP read window.
+ * Emulates a Synopsys DesignWare SSI SPI controller.
  *
  */
 
@@ -25,7 +24,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(DwSsiState, DW_SSI)
 #define DW_SSI_REGS_SIZE 0x14c
 #define DW_SSI_NUM_REGS \
     (DW_SSI_REGS_SIZE / sizeof(uint32_t))
-#define DW_SSI_XIP_WINDOW_SIZE 0x08000000
+
+/*
+ * DwSsiConfig: per-instance configuration properties.
+ *
+ * These are set by the SoC/machine code before realize and are
+ * immutable for the lifetime of the device.
+ */
+typedef struct DwSsiConfig {
+    uint32_t num_cs;
+    uint32_t fifo_depth;
+    uint32_t imr_reset;
+} DwSsiConfig;
 
 /* SSI GPIO output ordering differs from RISR/ISR bit ordering. */
 typedef enum DwSsiIrq {
@@ -36,8 +46,6 @@ typedef enum DwSsiIrq {
     DW_SSI_IRQ_TXU,
     DW_SSI_IRQ_RXU,
     DW_SSI_IRQ_MST,
-    DW_SSI_IRQ_DONE,
-    DW_SSI_IRQ_AXIE,
     DW_SSI_IRQ_COUNT,
 } DwSsiIrq;
 
@@ -74,6 +82,8 @@ typedef struct DwSsiEnhancedCommand {
 struct DwSsiState {
     SysBusDevice parent_obj;
 
+    DwSsiConfig cfg;
+
     MemoryRegion mmio;
     MemoryRegion xip;
     SSIBus *spi;
@@ -92,7 +102,6 @@ struct DwSsiState {
     uint32_t remaining_frames;
     DwSsiEnhancedCommand enhanced;
 
-    uint32_t num_cs;
     uint32_t max_lines;
     int active_cs;
     bool sleep_status;
