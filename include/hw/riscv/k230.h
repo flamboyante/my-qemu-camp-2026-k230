@@ -22,6 +22,7 @@
 #include "hw/char/k230_uart.h"
 #include "hw/watchdog/k230_wdt.h"
 #include "hw/misc/k230_rmu.h"
+#include "hw/timer/k230_dwapb_timer.h"
 
 #define C908_CPU_HARTID   (0)
 
@@ -44,6 +45,7 @@ typedef struct K230SoCState {
     K230WdtState wdt[2];
     DwSsiState dw_ssi[3];
     K230RmuState rmu;
+    K230TimerState timer;
     MemoryRegion sram;
     MemoryRegion bootrom;
 
@@ -141,6 +143,12 @@ enum {
     K230_UART2_IRQ  = 18,
     K230_UART3_IRQ  = 19,
     K230_UART4_IRQ  = 20,
+    K230_TIMER0_IRQ = 101,
+    K230_TIMER1_IRQ = 102,
+    K230_TIMER2_IRQ = 103,
+    K230_TIMER3_IRQ = 104,
+    K230_TIMER4_IRQ = 105,
+    K230_TIMER5_IRQ = 106,
     K230_WDT0_IRQ   = 107,
     K230_WDT1_IRQ   = 108,
     K230_SPI0_IRQ_BASE = 146,

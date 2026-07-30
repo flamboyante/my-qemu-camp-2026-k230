@@ -27,6 +27,8 @@
 #include "hw/block/flash.h"
 #include "hw/core/loader.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/clock.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/riscv/k230.h"
 #include "hw/riscv/boot.h"
 #include "hw/riscv/machines-qom.h"
@@ -180,6 +182,12 @@ static void k230_soc_init(Object *obj)
         g_autofree char *name = g_strdup_printf("k230-uart%d", i);
         object_initialize_child(obj, name, &s->uart[i], TYPE_K230_UART);
     }
+    object_initialize_child(obj, "k230-dwapb-timer", &s->timer,
+                            TYPE_K230_TIMER);
+
+    Clock *timer_clk = clock_new(OBJECT(s), "timer-clk");
+    clock_set_hz(timer_clk, K230_APBTMR_DEFAULT_FREQ);
+    qdev_connect_clock_in(DEVICE(&s->timer), "pclk", timer_clk);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -298,6 +306,18 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     /* UART */
     for (int i = 0; i < K230_UART_COUNT; i++) {
         k230_create_uart(s, DEVICE(s->c908_plic), i);
+    }
+
+    /* Timer */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->timer), errp)) {
+        return;
+    }
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->timer), 0, memmap[K230_DEV_TIMER].base);
+
+    for (int i = 0; i < K230_APBTMR_NUM_TIMERS; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->timer), i,
+                           qdev_get_gpio_in(DEVICE(s->c908_plic),
+                                            K230_TIMER0_IRQ + i));
     }
 
     /* Watchdog */
@@ -421,9 +441,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
 
     create_unimplemented_device("iomux", memmap[K230_DEV_IOMUX].base,
                                 memmap[K230_DEV_IOMUX].size);
-
-    create_unimplemented_device("timer", memmap[K230_DEV_TIMER].base,
-                                memmap[K230_DEV_TIMER].size);
 
     create_unimplemented_device("wdt0", memmap[K230_DEV_WDT0].base,
                                 memmap[K230_DEV_WDT0].size);
