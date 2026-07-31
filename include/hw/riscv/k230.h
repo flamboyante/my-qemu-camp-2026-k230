@@ -16,7 +16,6 @@
 #define HW_K230_H
 
 #include "hw/core/boards.h"
-#include "hw/misc/k230_hi_sys.h"
 #include "hw/riscv/riscv_hart.h"
 #include "hw/ssi/dw_ssi.h"
 #include "hw/watchdog/k230_wdt.h"
@@ -36,7 +35,6 @@ typedef struct K230SoCState {
 
     K230WdtState wdt[2];
     DwSsiState dw_ssi[3];
-    K230HiSysState hi_sys;
     MemoryRegion sram;
     MemoryRegion bootrom;
 

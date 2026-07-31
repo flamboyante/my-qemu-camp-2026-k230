@@ -56,28 +56,7 @@ typedef enum DwSsiPhase {
     DW_SSI_PHASE_EEPROM_COMMAND,
     DW_SSI_PHASE_EEPROM_DATA,
 
-    DW_SSI_PHASE_ENHANCED_INSTRUCTION,
-    DW_SSI_PHASE_ENHANCED_ADDRESS,
-    DW_SSI_PHASE_ENHANCED_DUMMY,
-    DW_SSI_PHASE_ENHANCED_DATA,
 } DwSsiPhase;
-
-typedef struct DwSsiEnhancedCommand {
-    uint32_t instruction;
-    uint32_t address;
-    uint32_t instruction_bits;
-    uint32_t address_bits;
-    uint32_t wait_cycles;
-    uint32_t data_frames;
-    uint32_t spi_frf;
-    uint32_t trans_type;
-    uint32_t tmod;
-
-    /* XIP-only fields; ordinary enhanced transfers do not consume them. */
-    uint32_t mode;
-    uint32_t mode_bits;
-    bool mode_bits_enabled;
-} DwSsiEnhancedCommand;
 
 struct DwSsiState {
     SysBusDevice parent_obj;
@@ -85,7 +64,6 @@ struct DwSsiState {
     DwSsiConfig cfg;
 
     MemoryRegion mmio;
-    MemoryRegion xip;
     SSIBus *spi;
 
     qemu_irq *cs_lines;
@@ -96,19 +74,12 @@ struct DwSsiState {
     uint32_t regs[DW_SSI_NUM_REGS];
 
     uint32_t irq_latched;
-    uint32_t idma_completed_frames;
 
     uint32_t phase;
     uint32_t remaining_frames;
-    DwSsiEnhancedCommand enhanced;
-
     uint32_t max_lines;
     int active_cs;
-    bool sleep_status;
-    bool xip_enabled;
 };
 
-uint32_t dw_ssi_get_spi_mode(const DwSsiState *s);
-bool dw_ssi_is_sleeping(const DwSsiState *s);
 
 #endif /* HW_SSI_DW_SSI_H */

@@ -19,8 +19,6 @@
 #define HW_MISC_K230_HI_SYS_H
 
 #include "hw/core/sysbus.h"
-#include "hw/ssi/dw_ssi.h"
-#include "hw/core/irq.h"
 #include "qom/object.h"
 
 
@@ -47,10 +45,6 @@ struct K230HiSysState {
 
     MemoryRegion mmio;
     uint32_t ssi_ctrl;
-    qemu_irq xip_enable_out;
-    DwSsiState *ssi[3];
 };
 
-void k230_hi_sys_set_ssi(K230HiSysState *s, unsigned int index,
-                         DwSsiState *ssi);
 #endif /* HW_MISC_K230_HI_SYS_H */

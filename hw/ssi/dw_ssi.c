@@ -74,7 +74,6 @@ REG32(TXFLR, 0x020)
 REG32(RXFLR, 0x024)
     FIELD(RXFLR, RXTFL, 0, 9)
 REG32(SR, 0x028)
-    FIELD(SR, CMPLTD_DF, 15, 17)
     FIELD(SR, DCOL, 6, 1)
     FIELD(SR, TXE, 5, 1)
     FIELD(SR, BUSY, 0, 1)
@@ -316,14 +315,6 @@ static bool dw_ssi_enabled(const DwSsiState *s)
 {
     return FIELD_EX32(s->regs[R_SSIENR], SSIENR, SSIC_EN);
 }
-uint32_t dw_ssi_get_spi_mode(const DwSsiState *s)
-{
-    return FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
-}
-bool dw_ssi_is_sleeping(const DwSsiState *s)
-{
-    return s->sleep_status;
-}
 static void dw_ssi_deselect(DwSsiState *s)
 {
     if (s->active_cs < 0) {
@@ -380,7 +371,6 @@ static void dw_ssi_abort_transfer(DwSsiState *s)
     fifo32_reset(&s->rx_fifo);
     s->phase = DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
-    memset(&s->enhanced, 0, sizeof(s->enhanced));
     dw_ssi_update_irq(s);
 }
 static uint32_t dw_ssi_status(DwSsiState *s)
@@ -394,7 +384,6 @@ static uint32_t dw_ssi_status(DwSsiState *s)
     sr = FIELD_DP32(sr, SR, RFNE, rx_used != 0);
     sr = FIELD_DP32(sr, SR, RFF,
                     rx_used == s->cfg.fifo_depth);
-    sr = FIELD_DP32(sr, SR, CMPLTD_DF, s->idma_completed_frames);
     return sr;
 }
 static void dw_ssi_run_transfer(DwSsiState *s);
@@ -427,499 +416,10 @@ static uint32_t dw_ssi_send_frame(DwSsiState *s,
     }
     return rx & mask;
 }
-static bool dw_ssi_enhanced_config_supported(DwSsiState *s)
-{
-    uint32_t ctrlr0 = s->regs[R_CTRLR0];
-    uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
-    uint32_t spi_frf;
-    uint32_t trans_type;
-    uint32_t tmod;
-    uint32_t required_lines;
-    spi_frf = FIELD_EX32(ctrlr0, CTRLR0, SPI_FRF);
-    trans_type = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE);
-    tmod = FIELD_EX32(ctrlr0, CTRLR0, TMOD);
-    switch (spi_frf) {
-    case 1: /* Dual */
-        required_lines = 2;
-        break;
-    case 2: /* Quad */
-        required_lines = 4;
-        break;
-    default:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: unsupported SPI_FRF=%u\n",
-                      DEVICE(s)->canonical_path, spi_frf);
-        return false;
-    }
-    if (required_lines > s->max_lines) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: SPI_FRF=%u requires %u lines, only %u available\n",
-                      DEVICE(s)->canonical_path,
-                      spi_frf, required_lines, s->max_lines);
-        return false;
-    }
-    if (trans_type > 2) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: unsupported TRANS_TYPE=%u\n",
-                      DEVICE(s)->canonical_path, trans_type);
-        return false;
-    }
-    if (tmod != DW_SSI_TMOD_RO && tmod != DW_SSI_TMOD_TO) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: unsupported enhanced TMOD=%u\n",
-                      DEVICE(s)->canonical_path, tmod);
-        return false;
-    }
-    if (FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_DDR_EN) ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_DDR_EN) ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_EN) ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_SIG_EN)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: DDR/RXDS enhanced mode is unsupported\n",
-                      DEVICE(s)->canonical_path);
-        return false;
-    }
-    return true;
-}
-static bool dw_ssi_decode_enhanced_command(
-    DwSsiState *s, DwSsiEnhancedCommand *command)
-{
-    uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
-    uint32_t inst_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, INST_L);
-    uint32_t addr_l = FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, ADDR_L);
-    uint32_t trans_type = FIELD_EX32(s->regs[R_SPI_CTRLR0],
-                                     SPI_CTRLR0, TRANS_TYPE);
-    uint32_t inst_bits;
-    uint32_t addr_bits = addr_l << 2;
-    if (!dw_ssi_enhanced_config_supported(s)) {
-        return false;
-    }
-    inst_bits = inst_l ? (1U << (inst_l + 1)) : 0;
-    if (addr_bits > 32) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: unsupported enhanced address length %u bits\n",
-                      DEVICE(s)->canonical_path, addr_bits);
-        return false;
-    }
-    command->instruction_bits = inst_bits;
-    command->address_bits = addr_bits;
-    command->wait_cycles =
-        FIELD_EX32(s->regs[R_SPI_CTRLR0], SPI_CTRLR0, WAIT_CYCLES);
-    command->data_frames =
-        FIELD_EX32(s->regs[R_CTRLR1], CTRLR1, NDF) + 1;
-    command->spi_frf = spi_frf;
-    command->trans_type = trans_type;
-    command->tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
-    return true;
-}
-static bool dw_ssi_prepare_enhanced_command(DwSsiState *s)
-{
-    DwSsiEnhancedCommand command = { 0 };
-    uint32_t required_items;
-    if (!dw_ssi_decode_enhanced_command(s, &command)) {
-        return false;
-    }
-    required_items = (command.instruction_bits != 0) +
-                     (command.address_bits != 0);
-    if (fifo32_num_used(&s->tx_fifo) < required_items) {
-        return false;
-    }
-    if (command.instruction_bits != 0) {
-        command.instruction = fifo32_pop(&s->tx_fifo) &
-            (uint32_t)MAKE_64BIT_MASK(0, command.instruction_bits);
-    }
-    if (command.address_bits != 0) {
-        command.address = fifo32_pop(&s->tx_fifo) &
-            (uint32_t)MAKE_64BIT_MASK(0, command.address_bits);
-    }
-    s->enhanced = command;
-    s->remaining_frames = command.data_frames;
-    s->phase = DW_SSI_PHASE_ENHANCED_INSTRUCTION;
-    return true;
-}
-static void dw_ssi_send_enhanced_field(DwSsiState *s,
-                                             uint32_t value,
-                                             uint32_t bits)
-{
-    uint32_t bytes = DIV_ROUND_UP(bits, 8);
-    for (uint32_t i = 0; i < bytes; i++) {
-        uint32_t shift = (bytes - i - 1) * 8;
-        ssi_transfer(s->spi, (value >> shift) & 0xff);
-    }
-}
-static uint32_t dw_ssi_dummy_bytes(uint32_t spi_frf,
-                                         uint32_t trans_type,
-                                         uint32_t wait_cycles)
-{
-    uint32_t lines = 1;
-    if (trans_type != 0) {
-        lines = spi_frf == 1 ? 2 : 4;
-    }
-    return DIV_ROUND_UP(wait_cycles * lines, 8);
-}
-static bool dw_ssi_xip_config_supported(DwSsiState *s)
-{
-    uint32_t spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
-    uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
-    uint32_t required_lines;
-    switch (spi_frf) {
-    case 0:
-        required_lines = 1;
-        break;
-    case 1:
-        required_lines = 2;
-        break;
-    case 2:
-        required_lines = 4;
-        break;
-    default:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: XIP does not support SPI_FRF=%u\n",
-                      DEVICE(s)->canonical_path, spi_frf);
-        return false;
-    }
-    if (required_lines > s->max_lines ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE) > 2) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: unsupported XIP line or transfer type\n",
-                      DEVICE(s)->canonical_path);
-        return false;
-    }
-    if (FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_DDR_EN) ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_DDR_EN) ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_EN) ||
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, SPI_RXDS_SIG_EN)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: XIP DDR/RXDS mode is unsupported\n",
-                      DEVICE(s)->canonical_path);
-        return false;
-    }
-    return true;
-}
-static bool dw_ssi_prepare_xip_command(
-    DwSsiState *s, hwaddr address, DwSsiEnhancedCommand *command)
-{
-    uint32_t spi_ctrlr0 = s->regs[R_SPI_CTRLR0];
-    uint32_t inst_l = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, INST_L);
-    uint32_t addr_l = FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, ADDR_L);
-    command->instruction_bits =
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, XIP_INST_EN) && inst_l ?
-        1U << (inst_l + 1) : 0;
-    command->address_bits = addr_l << 2;
-    if (command->address_bits > 32) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: unsupported XIP address length %u bits\n",
-                      DEVICE(s)->canonical_path, command->address_bits);
-        return false;
-    }
-    command->mode_bits_enabled =
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, XIP_MD_BIT_EN);
-    if (command->mode_bits_enabled) {
-        uint32_t mode_length_encoding =
-            FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, XIP_MBL);
-        command->mode_bits = 1U << (mode_length_encoding + 1);
-    }
-    command->instruction = s->regs[R_XIP_INCR_INST] &
-        (uint32_t)MAKE_64BIT_MASK(0, command->instruction_bits);
-    command->address = (uint32_t)address &
-        (uint32_t)MAKE_64BIT_MASK(0, command->address_bits);
-    command->mode = s->regs[R_XIP_MODE_BITS] &
-        (uint32_t)MAKE_64BIT_MASK(0, command->mode_bits);
-    command->wait_cycles =
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, WAIT_CYCLES);
-    command->spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
-    command->trans_type =
-        FIELD_EX32(spi_ctrlr0, SPI_CTRLR0, TRANS_TYPE);
-    return true;
-}
-static uint64_t dw_ssi_xip_read(void *opaque, hwaddr address,
-                                     unsigned int size)
-{
-    DwSsiState *s = DW_SSI(opaque);
-    DwSsiEnhancedCommand command = { 0 };
-    uint64_t value = 0;
-    uint32_t dummy_bytes;
-    if (!s->xip_enabled) {
-        return 0;
-    }
-    if (!dw_ssi_xip_config_supported(s) ||
-        !dw_ssi_prepare_xip_command(s, address, &command)) {
-        return 0;
-    }
-    if (s->active_cs >= 0 || s->phase != DW_SSI_PHASE_IDLE) {
-        dw_ssi_abort_transfer(s);
-    }
-    dw_ssi_select(s, 0);
-    if (s->active_cs != 0) {
-        return 0;
-    }
-    if (command.instruction_bits != 0) {
-        dw_ssi_send_enhanced_field(s, command.instruction,
-                                         command.instruction_bits);
-    }
-    if (command.address_bits != 0) {
-        dw_ssi_send_enhanced_field(s, command.address,
-                                         command.address_bits);
-    }
-    if (command.mode_bits_enabled) {
-        dw_ssi_send_enhanced_field(s, command.mode,
-                                         command.mode_bits);
-    }
-    dummy_bytes = dw_ssi_dummy_bytes(
-        command.spi_frf, command.trans_type, command.wait_cycles);
-    for (uint32_t i = 0; i < dummy_bytes; i++) {
-        ssi_transfer(s->spi, 0);
-    }
-    for (unsigned int i = 0; i < size; i++) {
-        value |= (uint64_t)(ssi_transfer(s->spi, 0) & 0xff) << (8 * i);
-    }
-    trace_dw_ssi_xip_read(s, address, size, value);
-    dw_ssi_deselect(s);
-    return value;
-}
-static void dw_ssi_xip_write(void *opaque, hwaddr address,
-                                  uint64_t value, unsigned int size)
-{
-    DwSsiState *s = DW_SSI(opaque);
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "%s: XIP write at 0x%" HWADDR_PRIx " is unsupported\n",
-                  DEVICE(s)->canonical_path, address);
-}
-static const MemoryRegionOps dw_ssi_xip_ops = {
-    .read = dw_ssi_xip_read,
-    .write = dw_ssi_xip_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = {
-        .min_access_size = 1,
-        .max_access_size = 8,
-        .unaligned = true,
-    },
-    .impl = {
-        .min_access_size = 1,
-        .max_access_size = 8,
-        .unaligned = true,
-    },
-};
-static bool dw_ssi_idma_enabled(const DwSsiState *s)
-{
-    return FIELD_EX32(s->regs[R_DMACR], DMACR, IDMAE);
-}
-static uint64_t dw_ssi_idma_address(const DwSsiState *s)
-{
-    return s->regs[R_AXIAR0] | ((uint64_t)s->regs[R_AXIAR1] << 32);
-}
-static bool dw_ssi_idma_triggered(const DwSsiState *s)
-{
-    uint32_t ser = s->regs[R_SER];
-    return dw_ssi_idma_enabled(s) &&
-           dw_ssi_enabled(s) && ser &&
-           !(ser & (ser - 1)) &&
-           s->phase == DW_SSI_PHASE_IDLE;
-}
-static void dw_ssi_idma_end(DwSsiState *s, uint32_t cause)
-{
-    s->regs[R_SSIENR] = 0;
-    s->sleep_status = true;
-    s->phase = DW_SSI_PHASE_IDLE;
-    s->remaining_frames = 0;
-    dw_ssi_deselect(s);
-    s->irq_latched |= cause;
-    dw_ssi_update_irq(s);
-}
-static void dw_ssi_idma_fail(DwSsiState *s, const char *operation)
-{
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "%s: IDMA %s memory access failed\n",
-                  DEVICE(s)->canonical_path, operation);
-    s->idma_completed_frames = 0;
-    dw_ssi_idma_end(s, R_RISR_AXIER_MASK);
-}
-/*
- * Supported SDK paths observe the final memory contents and DONE/AXIE,
- * so complete IDMA synchronously without modeling AXI timing or FIFO
- * backpressure.
- */
-static void dw_ssi_try_idma(DwSsiState *s)
-{
-    DwSsiEnhancedCommand command = { 0 };
-    g_autofree uint8_t *buffer = NULL;
-    uint64_t address;
-    uint32_t dummy_bytes;
-    uint32_t length;
-    MemTxResult result;
-    if (!dw_ssi_idma_triggered(s)) {
-        return;
-    }
-    if (!FIELD_EX32(s->regs[R_DMACR], DMACR, AINC)) {
-        qemu_log_mask(LOG_UNIMP,
-                      "%s: fixed-address IDMA is unsupported\n",
-                      DEVICE(s)->canonical_path);
-        s->idma_completed_frames = 0;
-        dw_ssi_idma_end(s, 0);
-        return;
-    }
-    if (!fifo32_is_empty(&s->tx_fifo) ||
-        !fifo32_is_empty(&s->rx_fifo)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: IDMA requires empty TX and RX FIFOs\n",
-                      DEVICE(s)->canonical_path);
-        s->idma_completed_frames = 0;
-        dw_ssi_idma_end(s, 0);
-        return;
-    }
-    if (FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, DFS) != 7) {
-        qemu_log_mask(LOG_UNIMP,
-                      "%s: IDMA only supports 8-bit data frames\n",
-                      DEVICE(s)->canonical_path);
-        s->idma_completed_frames = 0;
-        dw_ssi_idma_end(s, 0);
-        return;
-    }
-    if (!dw_ssi_decode_enhanced_command(s, &command)) {
-        s->idma_completed_frames = 0;
-        dw_ssi_idma_end(s, 0);
-        return;
-    }
-    command.instruction = s->regs[R_SPIDR] &
-        (uint32_t)MAKE_64BIT_MASK(0, command.instruction_bits);
-    command.address = s->regs[R_SPIAR] &
-        (uint32_t)MAKE_64BIT_MASK(0, command.address_bits);
-    length = command.data_frames;
-    address = dw_ssi_idma_address(s);
-    s->idma_completed_frames = 0;
-    if (address > UINT64_MAX - (length - 1)) {
-        trace_dw_ssi_idma_error(s, 0, address);
-        dw_ssi_idma_fail(s, "address range");
-        return;
-    }
-    trace_dw_ssi_idma_start(
-        s, command.tmod, command.spi_frf, length, address, command.address);
-    buffer = g_malloc(length);
-    if (command.tmod == DW_SSI_TMOD_TO) {
-        result = dma_memory_read(&address_space_memory, address, buffer,
-                                 length, MEMTXATTRS_UNSPECIFIED);
-        if (result != MEMTX_OK) {
-            trace_dw_ssi_idma_error(s, 1, address);
-            dw_ssi_idma_fail(s, "source");
-            return;
-        }
-    }
-    dw_ssi_update_cs(s);
-    if (s->active_cs < 0) {
-        dw_ssi_idma_end(s, 0);
-        return;
-    }
-    if (command.instruction_bits != 0) {
-        dw_ssi_send_enhanced_field(s, command.instruction,
-                                         command.instruction_bits);
-    }
-    if (command.address_bits != 0) {
-        dw_ssi_send_enhanced_field(s, command.address,
-                                         command.address_bits);
-    }
-    dummy_bytes = dw_ssi_dummy_bytes(
-        command.spi_frf, command.trans_type, command.wait_cycles);
-    for (uint32_t i = 0; i < dummy_bytes; i++) {
-        ssi_transfer(s->spi, 0);
-    }
-    if (command.tmod == DW_SSI_TMOD_RO) {
-        for (uint32_t i = 0; i < length; i++) {
-            buffer[i] = ssi_transfer(s->spi, 0);
-        }
-        result = dma_memory_write(&address_space_memory, address, buffer,
-                                  length, MEMTXATTRS_UNSPECIFIED);
-        if (result != MEMTX_OK) {
-            trace_dw_ssi_idma_error(s, 2, address);
-            dw_ssi_idma_fail(s, "destination");
-            return;
-        }
-    } else {
-        for (uint32_t i = 0; i < length; i++) {
-            ssi_transfer(s->spi, buffer[i]);
-        }
-    }
-    s->idma_completed_frames = length;
-    trace_dw_ssi_idma_done(s, address, length);
-    dw_ssi_idma_end(s, R_RISR_DONER_MASK);
-}
-static void dw_ssi_run_enhanced_rx_data(DwSsiState *s)
-{
-    while (!fifo32_is_full(&s->rx_fifo) &&
-           s->remaining_frames > 0) {
-        uint32_t rx = ssi_transfer(s->spi, 0);
-        fifo32_push(&s->rx_fifo,
-                    rx & dw_ssi_frame_masked(s));
-        s->remaining_frames--;
-    }
-}
-static void dw_ssi_run_enhanced_tx_data(DwSsiState *s)
-{
-    uint32_t mask = dw_ssi_frame_masked(s);
-    while (!fifo32_is_empty(&s->tx_fifo) &&
-           s->remaining_frames > 0) {
-        uint32_t tx = fifo32_pop(&s->tx_fifo);
-        ssi_transfer(s->spi, tx & mask);
-        s->remaining_frames--;
-    }
-}
-static void dw_ssi_run_enhanced_transfer(DwSsiState *s)
-{
-    if (s->phase == DW_SSI_PHASE_IDLE) {
-        if (!dw_ssi_prepare_enhanced_command(s)) {
-            return;
-        }
-    }
-    if (s->phase == DW_SSI_PHASE_ENHANCED_INSTRUCTION) {
-        if (s->enhanced.instruction_bits != 0) {
-            dw_ssi_send_enhanced_field(
-                s, s->enhanced.instruction,
-                s->enhanced.instruction_bits);
-        }
-        s->phase = DW_SSI_PHASE_ENHANCED_ADDRESS;
-    }
-    if (s->phase == DW_SSI_PHASE_ENHANCED_ADDRESS) {
-        if (s->enhanced.address_bits != 0) {
-            dw_ssi_send_enhanced_field(
-                s, s->enhanced.address, s->enhanced.address_bits);
-        }
-        s->phase = DW_SSI_PHASE_ENHANCED_DUMMY;
-    }
-    if (s->phase == DW_SSI_PHASE_ENHANCED_DUMMY) {
-        uint32_t dummy_bytes = dw_ssi_dummy_bytes(
-            s->enhanced.spi_frf, s->enhanced.trans_type,
-            s->enhanced.wait_cycles);
-        for (uint32_t i = 0; i < dummy_bytes; i++) {
-            ssi_transfer(s->spi, 0);
-        }
-        s->phase = DW_SSI_PHASE_ENHANCED_DATA;
-    }
-    if (s->phase != DW_SSI_PHASE_ENHANCED_DATA) {
-        g_assert_not_reached();
-    }
-    switch (s->enhanced.tmod) {
-    case DW_SSI_TMOD_RO:
-        dw_ssi_run_enhanced_rx_data(s);
-        break;
-    case DW_SSI_TMOD_TO:
-        dw_ssi_run_enhanced_tx_data(s);
-        break;
-    default:
-        g_assert_not_reached();
-    }
-    if (s->remaining_frames == 0) {
-        s->phase = DW_SSI_PHASE_IDLE;
-    }
-}
 static void dw_ssi_run_transfer(DwSsiState *s)
 {
-    uint32_t spi_frf;
     uint32_t tmod;
     if (!dw_ssi_enabled(s) || s->active_cs < 0) {
-        return;
-    }
-    spi_frf = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, SPI_FRF);
-    if (spi_frf != 0) {
-        dw_ssi_run_enhanced_transfer(s);
         return;
     }
     tmod = FIELD_EX32(s->regs[R_CTRLR0], CTRLR0, TMOD);
@@ -1072,9 +572,6 @@ static uint64_t dw_ssi_read(void *opaque, hwaddr addr, unsigned int size)
     DwSsiState *s = DW_SSI(opaque);
     uint32_t value = 0;
     if (dw_ssi_is_dr(addr)) {
-        if (dw_ssi_idma_enabled(s)) {
-            return 0;
-        }
         if (!fifo32_is_empty(&s->rx_fifo)) {
             value = fifo32_pop(&s->rx_fifo) & dw_ssi_frame_masked(s);
         } else {
@@ -1182,9 +679,6 @@ static void dw_ssi_write(void *opaque, hwaddr addr,
 {
     DwSsiState *s = DW_SSI(opaque);
     if (dw_ssi_is_dr(addr)) {
-        if (dw_ssi_idma_enabled(s)) {
-            return;
-        }
         dw_ssi_push_tx(s, value);
         return;
     }
@@ -1220,16 +714,10 @@ static void dw_ssi_write(void *opaque, hwaddr addr,
         trace_dw_ssi_reg_write(s, addr, s->regs[R_SSIENR]);
         if (!new_enabled) {
             dw_ssi_abort_transfer(s);
-            s->sleep_status = true;
             return;
         }
-        s->sleep_status = false;
         dw_ssi_update_cs(s);
-        if (dw_ssi_idma_enabled(s)) {
-            dw_ssi_try_idma(s);
-        } else {
-            dw_ssi_run_transfer(s);
-        }
+        dw_ssi_run_transfer(s);
         dw_ssi_update_irq(s);
         break;
     }
@@ -1246,11 +734,7 @@ static void dw_ssi_write(void *opaque, hwaddr addr,
             break;
         }
         dw_ssi_update_cs(s);
-        if (dw_ssi_idma_enabled(s)) {
-            dw_ssi_try_idma(s);
-        } else {
-            dw_ssi_run_transfer(s);
-        }
+        dw_ssi_run_transfer(s);
         dw_ssi_update_irq(s);
         break;
     }
@@ -1286,70 +770,8 @@ static void dw_ssi_write(void *opaque, hwaddr addr,
     case A_MSTICR:
     case A_ICR:
         break;
-    case A_DMACR:
-        dw_ssi_write_masked(s, R_DMACR, value,
-                                 DW_SSI_DMACR_WRITABLE_MASK);
-        dw_ssi_try_idma(s);
-        break;
-    case A_AXIAWLEN:
-        dw_ssi_write_masked(s, R_AXIAWLEN, value,
-                                 DW_SSI_AXIAWLEN_WRITABLE_MASK);
-        break;
-    case A_AXIARLEN:
-        dw_ssi_write_masked(s, R_AXIARLEN, value,
-                                 DW_SSI_AXIARLEN_WRITABLE_MASK);
-        break;
     case A_IDR:
     case A_SSIC_VERSION_ID:
-        break;
-    case A_RX_SAMPLE_DELAY:
-        dw_ssi_write_masked(
-            s, R_RX_SAMPLE_DELAY, value,
-            DW_SSI_RX_SAMPLE_DELAY_WRITABLE_MASK);
-        break;
-    case A_SPI_CTRLR0:
-        dw_ssi_write_masked(
-            s, R_SPI_CTRLR0, value,
-            DW_SSI_SPI_CTRLR0_WRITABLE_MASK);
-        break;
-    case A_DDR_DRIVE_EDGE:
-        dw_ssi_write_masked(
-            s, R_DDR_DRIVE_EDGE, value,
-            DW_SSI_DDR_DRIVE_EDGE_WRITABLE_MASK);
-        break;
-    case A_XIP_MODE_BITS:
-        dw_ssi_write_masked(
-            s, R_XIP_MODE_BITS, value,
-            DW_SSI_XIP_MODE_BITS_WRITABLE_MASK);
-        break;
-    case A_XIP_INCR_INST:
-        dw_ssi_write_masked(
-            s, R_XIP_INCR_INST, value,
-            DW_SSI_XIP_INCR_INST_WRITABLE_MASK);
-        break;
-    case A_XIP_WRAP_INST:
-        dw_ssi_write_masked(
-            s, R_XIP_WRAP_INST, value,
-            DW_SSI_XIP_WRAP_INST_WRITABLE_MASK);
-        break;
-    case A_SPIDR:
-        dw_ssi_write_masked(s, R_SPIDR, value,
-                                 DW_SSI_SPIDR_WRITABLE_MASK);
-        break;
-    case A_SPIAR:
-        dw_ssi_write_masked(s, R_SPIAR, value,
-                                 DW_SSI_SPIAR_WRITABLE_MASK);
-        break;
-    case A_AXIAR0:
-        dw_ssi_write_masked(s, R_AXIAR0, value,
-                                 DW_SSI_AXIAR0_WRITABLE_MASK);
-        break;
-    case A_AXIAR1:
-        dw_ssi_write_masked(s, R_AXIAR1, value,
-                                 DW_SSI_AXIAR1_WRITABLE_MASK);
-        break;
-    case A_AXIECR:
-    case A_DONECR:
         break;
     default:
         if (addr >= DW_SSI_REGS_SIZE || (addr & 0x3) != 0) {
@@ -1384,19 +806,11 @@ static void dw_ssi_enter_reset(Object *obj, ResetType type)
     s->phase = DW_SSI_PHASE_IDLE;
     s->remaining_frames = 0;
     s->irq_latched = 0;
-    s->idma_completed_frames = 0;
-    memset(&s->enhanced, 0, sizeof(s->enhanced));
-    s->sleep_status = false;
     s->regs[R_CTRLR0] = DW_SSI_CTRLR0_RESET;
     s->regs[R_SR] = DW_SSI_SR_RESET;
     s->regs[R_IMR] = s->cfg.imr_reset;
-    s->regs[R_AXIAWLEN] = DW_SSI_AXIAWLEN_RESET;
-    s->regs[R_AXIARLEN] = DW_SSI_AXIARLEN_RESET;
     s->regs[R_IDR] = DW_SSI_IDR_RESET;
     s->regs[R_SSIC_VERSION_ID] = DW_SSI_VERSION;
-    s->regs[R_SPI_CTRLR0] = s->max_lines == 8 ?
-        DW_SSI_SPI_CTRLR0_FMC_RESET :
-        DW_SSI_SPI_CTRLR0_SPI_RESET;
     dw_ssi_update_irq(s);
 }
 static void dw_ssi_hold_reset(Object *obj, ResetType type)
@@ -1430,7 +844,6 @@ static int dw_ssi_post_load(void *opaque, int version_id)
     return 0;
 }
 
-
 static const VMStateDescription vmstate_dw_ssi = {
     .name = TYPE_DW_SSI,
     .post_load = dw_ssi_post_load,
@@ -1442,21 +855,9 @@ static const VMStateDescription vmstate_dw_ssi = {
         VMSTATE_FIFO32(tx_fifo, DwSsiState),
         VMSTATE_FIFO32(rx_fifo, DwSsiState),
         VMSTATE_UINT32(irq_latched, DwSsiState),
-        VMSTATE_UINT32(idma_completed_frames, DwSsiState),
         VMSTATE_UINT32(phase, DwSsiState),
         VMSTATE_UINT32(remaining_frames, DwSsiState),
-        VMSTATE_UINT32(enhanced.instruction, DwSsiState),
-        VMSTATE_UINT32(enhanced.address, DwSsiState),
-        VMSTATE_UINT32(enhanced.instruction_bits, DwSsiState),
-        VMSTATE_UINT32(enhanced.address_bits, DwSsiState),
-        VMSTATE_UINT32(enhanced.wait_cycles, DwSsiState),
-        VMSTATE_UINT32(enhanced.data_frames, DwSsiState),
-        VMSTATE_UINT32(enhanced.spi_frf, DwSsiState),
-        VMSTATE_UINT32(enhanced.trans_type, DwSsiState),
-        VMSTATE_UINT32(enhanced.tmod, DwSsiState),
         VMSTATE_INT32(active_cs, DwSsiState),
-        VMSTATE_BOOL(sleep_status, DwSsiState),
-        VMSTATE_BOOL(xip_enabled, DwSsiState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1469,10 +870,6 @@ static void dw_ssi_init(Object *obj)
     memory_region_init_io(&s->mmio, obj, &dw_ssi_ops, s,
                           TYPE_DW_SSI, DW_SSI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->mmio);
-    memory_region_init_io(&s->xip, obj, &dw_ssi_xip_ops, s,
-                          TYPE_DW_SSI ".xip",
-                          0x08000000);
-    sysbus_init_mmio(sbd, &s->xip);
     for (int i = 0; i < DW_SSI_IRQ_COUNT; i++) {
         sysbus_init_irq(sbd, &s->irqs[i]);
     }

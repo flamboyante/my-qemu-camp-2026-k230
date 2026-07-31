@@ -27,36 +27,7 @@
  */
 static uint32_t k230_hi_sys_ssi_status(const K230HiSysState *s)
 {
-    static const unsigned int sleep_bits[] = {
-        K230_SSI_CTRL_SPI0_SLEEP,
-        K230_SSI_CTRL_SPI1_SLEEP,
-        K230_SSI_CTRL_SPI2_SLEEP,
-    };
-    static const unsigned int mode_shifts[] = {
-        K230_SSI_CTRL_SPI0_MODE_SHIFT,
-        K230_SSI_CTRL_SPI1_MODE_SHIFT,
-        K230_SSI_CTRL_SPI2_MODE_SHIFT,
-    };
-    uint32_t value = s->ssi_ctrl;
-
-    for (unsigned int i = 0; i < ARRAY_SIZE(s->ssi); i++) {
-        if (!s->ssi[i]) {
-            continue;
-        }
-
-        value |= dw_ssi_get_spi_mode(s->ssi[i]) << mode_shifts[i];
-        if (dw_ssi_is_sleeping(s->ssi[i])) {
-            value |= sleep_bits[i];
-        }
-    }
-
-    return value;
-}
-
-static void k230_hi_sys_update_xip_enable(K230HiSysState *s)
-{
-    qemu_set_irq(s->xip_enable_out,
-                 !!(s->ssi_ctrl & K230_SSI_CTRL_XIP_EN));
+    return s->ssi_ctrl;
 }
 
 static uint64_t k230_hi_sys_read(void *opaque, hwaddr addr, unsigned size)
@@ -87,7 +58,6 @@ static void k230_hi_sys_write(void *opaque, hwaddr addr, uint64_t value,
                       ((uint32_t)value & K230_SSI_CTRL_WRITABLE_MASK);
         s->ssi_ctrl &= K230_SSI_CTRL_IMPLEMENTED_MASK;
 
-        k230_hi_sys_update_xip_enable(s);
         return;
     }
 
@@ -116,22 +86,13 @@ static const MemoryRegionOps k230_hi_sys_ops = {
     },
 };
 
-void k230_hi_sys_set_ssi(K230HiSysState *s, unsigned int index,
-                         DwSsiState *ssi)
-{
-    g_assert(index < ARRAY_SIZE(s->ssi));
-    s->ssi[index] = ssi;
-}
-
 static void k230_hi_sys_reset(Object *obj, ResetType type)
 {
     K230HiSysState *s = K230_HI_SYS(obj);
 
     s->ssi_ctrl = K230_SSI_CTRL_RESET;
 
-    k230_hi_sys_update_xip_enable(s);
 }
-
 
 static void k230_hi_sys_init(Object *obj)
 {
@@ -141,20 +102,10 @@ static void k230_hi_sys_init(Object *obj)
                           TYPE_K230_HI_SYS, K230_HI_SYS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
 
-    qdev_init_gpio_out_named(DEVICE(obj), &s->xip_enable_out, "xip-enable", 1);
 }
-
-static int k230_hi_sys_post_load(void *opaque, int version_id)
-{
-    K230HiSysState *s = opaque;
-    k230_hi_sys_update_xip_enable(s);
-    return 0;
-}
-
 
 static const VMStateDescription vmstate_k230_hi_sys = {
     .name = TYPE_K230_HI_SYS,
-    .post_load = k230_hi_sys_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ssi_ctrl, K230HiSysState),
         VMSTATE_END_OF_LIST()
