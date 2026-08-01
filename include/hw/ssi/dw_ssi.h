@@ -5,9 +5,8 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Emulates the DesignWare SSI controllers, including standard SPI,
- * Dual/Quad SDR, internal DMA, and the XIP read window.
- *
+ * Emulates the DesignWare SSI controller in Standard SPI mode,
+ * covering the PIO/FIFO data path, interrupt outputs and chip selects.
  */
 
 #ifndef HW_SSI_DW_SSI_H

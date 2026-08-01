@@ -120,6 +120,40 @@ static const K230SsiRoute k230_ssi_routes[] = {
     { .ssi_index = 1, .irq_base = K230_SPI2_IRQ_BASE },
 };
 
+typedef struct K230DwSsiProfile {
+    uint32_t num_cs;
+    uint32_t fifo_depth;
+    uint32_t imr_reset;
+} K230DwSsiProfile;
+
+static const K230DwSsiProfile k230_dw_ssi_profiles[] = {
+    [0] = { /* QSPI0, SDK spi1 */
+        .num_cs = 5,
+        .fifo_depth = 256,
+        .imr_reset = 0x0000001f,
+    },
+    [1] = { /* QSPI1, SDK spi2 */
+        .num_cs = 5,
+        .fifo_depth = 256,
+        .imr_reset = 0x0000001f,
+    },
+    [2] = { /* SPI-OPI/FMC, SDK spi0 */
+        .num_cs = 1,
+        .fifo_depth = 256,
+        .imr_reset = 0x0000003f,
+    },
+};
+
+static void k230_configure_dw_ssi(DwSsiState *ssi,
+                                  const K230DwSsiProfile *profile)
+{
+    DeviceState *dev = DEVICE(ssi);
+
+    qdev_prop_set_uint32(dev, "num-cs", profile->num_cs);
+    qdev_prop_set_uint32(dev, "fifo-depth", profile->fifo_depth);
+    qdev_prop_set_uint32(dev, "imr-reset", profile->imr_reset);
+}
+
 static void k230_soc_init(Object *obj)
 {
     K230SoCState *s = RISCV_K230_SOC(obj);
@@ -134,8 +168,6 @@ static void k230_soc_init(Object *obj)
                             TYPE_DW_SSI);
     object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
                             TYPE_DW_SSI);
-    object_initialize_child(obj, "k230-hi-sys", &s->hi_sys,
-                            TYPE_K230_HI_SYS);
 
     qdev_prop_set_uint32(DEVICE(cpu0), "hartid-base", 0);
     qdev_prop_set_string(DEVICE(cpu0), "cpu-type", TYPE_RISCV_CPU_THEAD_C908);
@@ -243,35 +275,11 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[0]), "num-cs", 5);
-    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[1]), "num-cs", 5);
-    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[2]), "num-cs", 1);
-    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[0]), "max-lines", 4);
-    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[1]), "max-lines", 4);
-    qdev_prop_set_uint32(DEVICE(&s->dw_ssi[2]), "max-lines", 8);
-
     for (int i = 0; i < ARRAY_SIZE(s->dw_ssi); i++) {
+        k230_configure_dw_ssi(&s->dw_ssi[i], &k230_dw_ssi_profiles[i]);
         if (!sysbus_realize(SYS_BUS_DEVICE(&s->dw_ssi[i]), errp)) {
             return;
         }
-    }
-
-    for (size_t logical_index = 0;
-         logical_index < ARRAY_SIZE(k230_ssi_routes); logical_index++) {
-        const K230SsiRoute *route = &k230_ssi_routes[logical_index];
-
-        k230_hi_sys_set_ssi(&s->hi_sys, logical_index,
-                            &s->dw_ssi[route->ssi_index]);
-        if (logical_index == 0) {
-            qdev_connect_gpio_out_named(
-                DEVICE(&s->hi_sys), "xip-enable", 0,
-                qdev_get_gpio_in_named(DEVICE(&s->dw_ssi[route->ssi_index]),
-                                   "xip-enable", 0));
-        }
-    }
-
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->hi_sys), errp)) {
-        return;
     }
 
     k230_connect_ssi_irqs(s);
@@ -290,10 +298,9 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
                     memmap[K230_DEV_QSPI1].base);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dw_ssi[2]), 1,
-                    memmap[K230_DEV_FLASH].base);
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->hi_sys), 0,
-                    memmap[K230_DEV_HI_SYS_CFG].base);
+
+    create_unimplemented_device("hi_sys", memmap[K230_DEV_HI_SYS_CFG].base,
+                                memmap[K230_DEV_HI_SYS_CFG].size);
 
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
