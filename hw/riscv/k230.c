@@ -23,6 +23,7 @@
 #include "system/system.h"
 #include "system/memory.h"
 #include "system/blockdev.h"
+#include "system/block-backend.h"
 #include "target/riscv/cpu.h"
 #include "hw/block/flash.h"
 #include "hw/core/loader.h"
@@ -643,6 +644,72 @@ static void k230_firmware_boot(K230MachineState *s, MachineState *machine)
                               memmap[K230_DEV_BOOTROM].size, 0, 0);
 }
 
+static void k230_coldboot_boot(K230MachineState *s, MachineState *machine)
+{
+    fprintf(stderr, "k230 coldboot: enter\n");
+    DriveInfo *dinfo = drive_get(IF_MTD, 0, 0);
+    BlockBackend *blk;
+    hwaddr spl_base = 0x80300000;         /* CONFIG_SPL_TEXT_BASE */
+    const size_t spl_part_size = 0x80000; /* CONFIG_SPL_MAX_SIZE */
+    const size_t fw_head_size = 528;      /* magic+length+type+verify */
+    const size_t version_size = 4;
+    uint8_t *raw;
+    int64_t len;
+    uint32_t body_len;
+    size_t spl_len;
+    int i;
+
+    blk = blk_by_legacy_dinfo(dinfo);
+    len = blk_getlength(blk);
+    if (len <= 0) {
+        error_report("k230: cannot get SPI flash size");
+        exit(EXIT_FAILURE);
+    }
+    if (len > spl_part_size) {
+        len = spl_part_size;
+    }
+
+    raw = g_malloc0(spl_part_size);
+    if (blk_pread(blk, 0, len, raw, 0) < 0) {
+        error_report("k230: failed to read SPL from SPI flash offset 0");
+        exit(EXIT_FAILURE);
+    }
+
+    /* BootROM reads 32-bit words byte-swapped from flash; undo it. */
+    for (i = 0; i + 4 <= len; i += 4) {
+        uint8_t b0 = raw[i], b1 = raw[i + 1];
+        raw[i]     = raw[i + 3];
+        raw[i + 1] = raw[i + 2];
+        raw[i + 2] = b1;
+        raw[i + 3] = b0;
+    }
+
+    if (raw[0] != 0x4b || raw[1] != 0x32 || raw[2] != 0x33 || raw[3] != 0x30) {
+        error_report("k230: bad K230 magic at SPI flash offset 0");
+        exit(EXIT_FAILURE);
+    }
+
+    /* firmware body length (version + SPL) from the K230 header */
+    body_len = ldl_le_p(raw + 4);
+    spl_len = body_len - version_size;
+    if (spl_len > len - fw_head_size - version_size) {
+        spl_len = len - fw_head_size - version_size;
+    }
+
+    fprintf(stderr, "k230 coldboot: magic ok body=%u spl=%zu -> 0x%lx\n",
+            body_len, spl_len, (unsigned long)spl_base);
+
+    address_space_write(&address_space_memory, spl_base,
+                        MEMTXATTRS_UNSPECIFIED,
+                        raw + fw_head_size + version_size, spl_len);
+
+    riscv_setup_rom_reset_vec(machine, &s->soc.c908_cpu, spl_base,
+                              memmap[K230_DEV_BOOTROM].base,
+                              memmap[K230_DEV_BOOTROM].size, 0, 0);
+
+    g_free(raw);
+}
+
 static char *k230_machine_get_spi_flash(Object *obj, Error **errp)
 {
     K230MachineState *s = RISCV_K230_MACHINE(obj);
@@ -694,6 +761,8 @@ static void k230_machine_done(Notifier *notifier, void *data)
 
     if (machine->kernel_filename) {
         k230_direct_boot(s, machine);
+    } else if (drive_get(IF_MTD, 0, 0)) {
+        k230_coldboot_boot(s, machine);
     } else {
         k230_firmware_boot(s, machine);
     }
@@ -717,11 +786,9 @@ static void k230_machine_init(MachineState *machine)
                             TYPE_RISCV_K230_SOC);
     qdev_realize(DEVICE(&s->soc), NULL, &error_fatal);
 
-    if (s->spi_flash_model) {
-        k230_connect_spi_flash(&s->soc.dw_ssi[2], 0,
-                               s->spi_flash_model,
-                               drive_get(IF_MTD, 0, 0));
-    }
+    k230_connect_spi_flash(&s->soc.dw_ssi[2], 0,
+                           s->spi_flash_model ? s->spi_flash_model : "w25q256",
+                           drive_get(IF_MTD, 0, 0));
 
     /* Data Memory */
     memory_region_add_subregion(sys_mem, memmap[K230_DEV_DDRC].base,

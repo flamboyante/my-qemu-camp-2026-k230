@@ -776,9 +776,9 @@ static void dw_ssi_write(void *opaque, hwaddr addr,
 
     switch (addr) {
     case A_CTRLR0:
-        value &= ~R_CTRLR0_SPI_FRF_MASK;
         dw_ssi_write_masked(s, R_CTRLR0, value,
-                                 DW_SSI_CTRLR0_STANDARD_WRITABLE_MASK);
+                                 DW_SSI_CTRLR0_STANDARD_WRITABLE_MASK |
+                                 R_CTRLR0_SPI_FRF_MASK);
         break;
     case A_CTRLR1:
         dw_ssi_write_masked(s, R_CTRLR1, value,
