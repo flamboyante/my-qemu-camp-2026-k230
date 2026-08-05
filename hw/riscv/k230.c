@@ -173,7 +173,9 @@ static void k230_soc_init(Object *obj)
     object_initialize_child(obj, "k230-qspi0", &s->dw_ssi[0],
                             TYPE_DW_SSI);
     object_initialize_child(obj, "k230-qspi1", &s->dw_ssi[1],
+                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-spi-opi", &s->dw_ssi[2],
+                            TYPE_DW_SSI);
     object_initialize_child(obj, "k230-rmu",  &s->rmu,    TYPE_K230_RMU);
     for (int i = 0; i < K230_UART_COUNT; i++) {
         g_autofree char *name = g_strdup_printf("k230-uart%d", i);
@@ -253,6 +255,7 @@ static void k230_connect_ssi_irqs(K230SoCState *s)
                 qdev_get_gpio_in(DEVICE(s->c908_plic), route->irq_base + i));
         }
     }
+}
 static void k230_sram_create(K230SoCState *s)
 {
     memory_region_init_ram(&s->sram, OBJECT(s), "k230.sram",
@@ -373,6 +376,8 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->iomux), 0, memmap[K230_DEV_IOMUX].base);
     /* Gsdma */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->gsdma), errp)) {
+        return;
+    }
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->gsdma), 0, memmap[K230_DEV_GSDMA].base);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->gsdma), 0,
                        qdev_get_gpio_in(DEVICE(s->c908_plic), K230_GSDMA_IRQ));

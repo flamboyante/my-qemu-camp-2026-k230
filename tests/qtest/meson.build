@@ -298,16 +298,12 @@ qtests_riscv64 = ['riscv-csr-test'] + \
    config_all_devices.has_key('CONFIG_RISCV_IOMMU') ?
    ['iommu-riscv-test'] : []) + \
   (config_all_devices.has_key('CONFIG_K230') ?
-   ['k230-wdt-test', 'k230-dw-ssi-test'] : [])
-  (config_all_devices.has_key('CONFIG_K230') ? ['k230-wdt-test',
-                                                'k230-rmu-test'] : [])
-   ['k230-ddr-test', 'k230-wdt-test'] : [])
-  (config_all_devices.has_key('CONFIG_K230') ? ['k230-wdt-test', 'k230-uart-test'] : [])
-   (config_all_devices.has_key('CONFIG_K230') ? ['k230-wdt-test', 'k230-dwapb-timer-test'] : [])
-  (config_all_devices.has_key('CONFIG_K230') ? ['k230-wdt-test', 'k230-gsdma-test'] : [])
-  (config_all_devices.has_key('CONFIG_K230') ? ['k230-wdt-test', 'k230-gsdma-test', 'k230-decomp-gzip-test'] : [])
+   [ 'k230-wdt-test', 'k230-dw-ssi-test', 'k230-rmu-test',
+    'k230-ddr-test', 'k230-uart-test', 'k230-dwapb-timer-test',
+    'k230-gsdma-test', 'k230-decomp-gzip-test' ] : [])
 
 qtests_hexagon = ['boot-serial-test']
+
 
 qos_test_ss = ss.source_set()
 qos_test_ss.add(
