@@ -18,6 +18,7 @@
 #include "hw/core/boards.h"
 #include "hw/misc/k230_ddr.h"
 #include "hw/riscv/riscv_hart.h"
+#include "hw/ssi/dwc_ssi.h"
 #include "hw/watchdog/k230_wdt.h"
 #include "hw/dma/k230_gsdma.h"
 #include "hw/misc/k230_decomp_gzip.h"
@@ -40,6 +41,7 @@ typedef struct K230SoCState {
     K230WdtState wdt[2];
     K230GSDMAState gsdma;
     K230DecompGzipState decomp_gzip;
+    DwcSsiState dwc_ssi[3];
     MemoryRegion sram;
     MemoryRegion bootrom;
 

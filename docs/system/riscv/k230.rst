@@ -23,6 +23,7 @@ The ``k230`` machine supports the following devices:
 * K230 DDRC CFG and DDR PHY
 * System Direct Memory Access (SDMA)
 * GZIP Decompress Engine (Decomp_gzip)
+* 3 K230 SSI controllers for SPI only
 
 Boot options
 ------------
