@@ -974,7 +974,7 @@ static int dwc_ssi_post_load(void *opaque, int version_id)
         !dwc_ssi_fifo_valid(&s->rx_fifo, s->cfg.fifo_depth)) {
         return -EINVAL;
     }
-    if (s->phase > DWC_SSI_PHASE_STANDARD_TR) {
+    if (s->phase >= DWC_SSI_PHASE_COUNT) {
         return -EINVAL;
     }
     if (s->phase == DWC_SSI_PHASE_RX_ONLY ||

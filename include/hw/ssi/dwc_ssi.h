@@ -46,6 +46,7 @@ typedef enum DwcSsiPhase {
     DWC_SSI_PHASE_EEPROM_COMMAND,
     DWC_SSI_PHASE_EEPROM_DATA,
     DWC_SSI_PHASE_STANDARD_TR,
+    DWC_SSI_PHASE_COUNT,
 } DwcSsiPhase;
 
 typedef struct DwcSsiConfig {
