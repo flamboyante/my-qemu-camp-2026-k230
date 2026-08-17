@@ -19,6 +19,7 @@
 #define K230_SSI_CTRLR0          0x000
 #define K230_SSI_CTRLR1          0x004
 #define K230_SSI_SSIENR          0x008
+#define K230_SSI_MWCR            0x00c
 #define K230_SSI_SER             0x010
 #define K230_SSI_BAUDR           0x014
 #define K230_SSI_TXFTLR          0x018
@@ -47,6 +48,7 @@
 #define K230_SSI_CTRLR0_TMOD_SHIFT      10
 #define K230_SSI_CTRLR0_SRL             BIT(13)
 #define K230_SSI_CTRLR0_SPI_FRF_MASK    (3U << 22)
+#define K230_SSI_MWCR_WRITABLE_MASK     0x00000007U
 #define K230_SSI_TXFTLR_TXFTHR_SHIFT     16
 #define K230_SSI_TMOD_TR                0
 #define K230_SSI_TMOD_TO                1
@@ -240,6 +242,9 @@ static void test_register_contract(void)
     k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_BAUDR, UINT32_MAX);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_BAUDR),
                     ==, K230_SSI_BAUDR_WRITABLE_MASK);
+    k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_MWCR, UINT32_MAX);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_MWCR),
+                    ==, K230_SSI_MWCR_WRITABLE_MASK);
 
     qtest_system_reset(qts);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI0_BASE, K230_SSI_CTRLR0),
