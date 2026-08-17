@@ -9,6 +9,7 @@ config SIFIVE_SPI
 config DWC_SSI
     bool
     select SSI
+    select REGISTER
 
 config SSI
     bool
