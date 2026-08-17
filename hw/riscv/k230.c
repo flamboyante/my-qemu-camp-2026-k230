@@ -124,24 +124,24 @@ static const K230SsiRoute k230_ssi_routes[] = {
 typedef struct K230DwcSsiProfile {
     uint32_t num_cs;
     uint32_t fifo_depth;
-    uint32_t imr_reset;
+    bool master_mode;
 } K230DwcSsiProfile;
 
 static const K230DwcSsiProfile k230_dwc_ssi_profiles[] = {
     [0] = { /* QSPI0, SDK spi1 */
         .num_cs = 5,
         .fifo_depth = 256,
-        .imr_reset = 0x0000001f,
+        .master_mode = false,
     },
     [1] = { /* QSPI1, SDK spi2 */
         .num_cs = 5,
         .fifo_depth = 256,
-        .imr_reset = 0x0000001f,
+        .master_mode = false,
     },
     [2] = { /* SPI-OPI/FMC, SDK spi0 */
         .num_cs = 1,
         .fifo_depth = 256,
-        .imr_reset = 0x0000003f,
+        .master_mode = true,
     },
 };
 
@@ -152,7 +152,7 @@ static void k230_configure_dwc_ssi(DwcSsiState *ssi,
 
     qdev_prop_set_uint32(dev, "num-cs", profile->num_cs);
     qdev_prop_set_uint32(dev, "fifo-depth", profile->fifo_depth);
-    qdev_prop_set_uint32(dev, "imr-reset", profile->imr_reset);
+    qdev_prop_set_bit(dev, "master-mode", profile->master_mode);
 }
 
 static void k230_soc_init(Object *obj)
