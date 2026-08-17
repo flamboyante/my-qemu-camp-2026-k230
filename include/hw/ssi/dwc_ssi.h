@@ -52,7 +52,7 @@ typedef enum DwcSsiPhase {
 typedef struct DwcSsiConfig {
     uint32_t num_cs;
     uint32_t fifo_depth;
-    uint32_t imr_reset;
+    bool master_mode;
 } DwcSsiConfig;
 
 struct DwcSsiState {

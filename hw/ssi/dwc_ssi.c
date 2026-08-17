@@ -25,6 +25,7 @@
 #define DWC_SSI_SR_RESET                0x00000006
 #define DWC_SSI_IDR_RESET               0xa1b2c3d5
 #define DWC_SSI_VERSION                 0x3130332a
+#define DWC_SSI_IMR_RESET_BASE          0x0000001f
 #define DWC_SSI_PIO_TX_BATCH            64
 #define DWC_SSI_IRQ_VALID_MASK          0x000009bf
 #define DWC_SSI_IMPLEMENTED_LATCHED_IRQ_MASK \
@@ -252,13 +253,13 @@ static bool dwc_ssi_validate_config(DwcSsiState *s, Error **errp)
         return false;
     }
 
-    if (s->cfg.imr_reset & ~DWC_SSI_IMR_WRITABLE_MASK) {
-        error_setg(errp, "%s: imr-reset contains unsupported bits",
-                   dev->canonical_path);
-        return false;
-    }
-
     return true;
+}
+
+static uint32_t dwc_ssi_imr_reset(const DwcSsiState *s)
+{
+    return DWC_SSI_IMR_RESET_BASE |
+           (s->cfg.master_mode ? R_IMR_MSTIM_MASK : 0);
 }
 
 static bool dwc_ssi_fifo_threshold_valid(const DwcSsiState *s, uint32_t value)
@@ -920,7 +921,7 @@ static void dwc_ssi_enter_reset(Object *obj, ResetType type)
 
     s->regs[R_CTRLR0] = DWC_SSI_CTRLR0_RESET;
     s->regs[R_SR] = DWC_SSI_SR_RESET;
-    s->regs[R_IMR] = s->cfg.imr_reset & DWC_SSI_IMR_WRITABLE_MASK;
+    s->regs[R_IMR] = dwc_ssi_imr_reset(s);
     s->regs[R_IDR] = DWC_SSI_IDR_RESET;
     s->regs[R_SSIC_VERSION_ID] = DWC_SSI_VERSION;
 
@@ -1010,7 +1011,7 @@ static const VMStateDescription vmstate_dwc_ssi = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(cfg.num_cs, DwcSsiState),
         VMSTATE_UINT32_EQUAL(cfg.fifo_depth, DwcSsiState),
-        VMSTATE_UINT32_EQUAL(cfg.imr_reset, DwcSsiState),
+        VMSTATE_BOOL(cfg.master_mode, DwcSsiState),
         VMSTATE_UINT32_ARRAY(regs, DwcSsiState, DWC_SSI_NUM_REGS),
         VMSTATE_FIFO32(tx_fifo, DwcSsiState),
         VMSTATE_FIFO32(rx_fifo, DwcSsiState),
@@ -1069,8 +1070,7 @@ static void dwc_ssi_finalize(Object *obj)
 static const Property dwc_ssi_properties[] = {
     DEFINE_PROP_UINT32("num-cs", DwcSsiState, cfg.num_cs, 1),
     DEFINE_PROP_UINT32("fifo-depth", DwcSsiState, cfg.fifo_depth, 256),
-    DEFINE_PROP_UINT32("imr-reset", DwcSsiState,
-                       cfg.imr_reset, 0x0000003f),
+    DEFINE_PROP_BOOL("master-mode", DwcSsiState, cfg.master_mode, true),
 };
 
 static void dwc_ssi_class_init(ObjectClass *klass, const void *data)
