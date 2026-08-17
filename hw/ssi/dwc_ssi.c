@@ -20,7 +20,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 
-/* DWC SSI 1.03 derivative (TRM v0.3.1 section 12.3). */
+/* DWC SSI 1.03 derivative (TRM v0.3.1 section 12.3) */
 #define DWC_SSI_CTRLR0_RESET            0x00004007
 #define DWC_SSI_SR_RESET                0x00000006
 #define DWC_SSI_IDR_RESET               0xa1b2c3d5
@@ -584,11 +584,11 @@ static bool dwc_ssi_is_dr(hwaddr addr)
 static bool dwc_ssi_is_unsupported_offset(hwaddr addr)
 {
     switch (addr) {
-    /* Enhanced SPI extensions. */
+    /* Enhanced SPI extensions */
     case A_SPI_CTRLR0:
     case A_DDR_DRIVE_EDGE:
 
-    /* XIP extensions. */
+    /* XIP extensions */
     case A_XIP_MODE_BITS:
     case A_XIP_INCR_INST:
     case A_XIP_WRAP_INST:
@@ -604,7 +604,7 @@ static bool dwc_ssi_is_unsupported_offset(hwaddr addr)
     case A_XIP_WRITE_WRAP_INST:
     case A_XIP_WRITE_CTRL:
 
-    /* Internal-AXI DMA/IDMA extensions. */
+    /* Internal-AXI DMA/IDMA extensions */
     case A_DMACR:
     case A_AXIAWLEN:
     case A_AXIARLEN:
@@ -615,7 +615,7 @@ static bool dwc_ssi_is_unsupported_offset(hwaddr addr)
     case A_AXIECR:
     case A_DONECR:
 
-    /* SSI unsupported extensions. */
+    /* SSI unsupported extensions */
     case A_RX_SAMPLE_DELAY:
         return true;
     default:
