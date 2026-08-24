@@ -7,6 +7,11 @@
  *
  * Emulates the DesignWare SSI controller in Standard SPI mode,
  * covering the PIO/FIFO data path, interrupt outputs and chip selects.
+ *
+ * Frame width follows CTRLR0.DFS (4..32 bits): each FIFO entry is one
+ * frame and is passed to the bus as-is. SPI NOR devices (m25p80 family)
+ * are 8-bit byte-protocol peripherals, so attach them only with DFS = 7;
+ * the reset value already selects an 8-bit frame.
  */
 
 #ifndef HW_SSI_DWC_SSI_H
