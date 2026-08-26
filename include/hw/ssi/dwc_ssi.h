@@ -12,6 +12,16 @@
  * frame and is passed to the bus as-is. SPI NOR devices (m25p80 family)
  * are 8-bit byte-protocol peripherals, so attach them only with DFS = 7;
  * the reset value already selects an 8-bit frame.
+ *
+ * Transfers complete synchronously: data queued in the TX FIFO is moved
+ * to the bus as part of the DR write that queued it. Guests that poll
+ * TXFLR expecting to see it fall gradually while they refill the FIFO
+ * (the native chip-select write-then-read pattern used by the K230
+ * vendor SPI driver for memory operations larger than the FIFO) will
+ * observe an empty FIFO once everything has already been sent; such
+ * guests must treat "TXFLR == 0 with BUSY cleared" as transfer
+ * completion instead of an error. Reads of any size and memory
+ * operations up to the FIFO depth are unaffected.
  */
 
 #ifndef HW_SSI_DWC_SSI_H

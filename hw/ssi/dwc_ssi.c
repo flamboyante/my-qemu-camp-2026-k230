@@ -26,7 +26,6 @@
 #define DWC_SSI_IDR_RESET               0xa1b2c3d5
 #define DWC_SSI_VERSION                 0x3130332a
 #define DWC_SSI_IMR_RESET_BASE          0x0000001f
-#define DWC_SSI_PIO_TX_BATCH            64
 #define DWC_SSI_IRQ_VALID_MASK          0x000009bf
 #define DWC_SSI_IMPLEMENTED_LATCHED_IRQ_MASK \
     (R_RISR_TXOIR_MASK | R_RISR_RXOIR_MASK | R_RISR_RXUIR_MASK)
@@ -418,10 +417,7 @@ static void dwc_ssi_push_tx(DwcSsiState *s, uint32_t tx)
     }
 
     fifo32_push(&s->tx_fifo, tx);
-
-    if (s->phase != DWC_SSI_PHASE_STANDARD_TX_ONLY) {
-        dwc_ssi_run_transfer(s);
-    }
+    dwc_ssi_run_transfer(s);
     dwc_ssi_update_irq(s);
 }
 
@@ -505,27 +501,20 @@ static void dwc_ssi_run_transfer(DwcSsiState *s)
             s->phase = DWC_SSI_PHASE_IDLE;
         }
         break;
-    case DWC_SSI_TMOD_TO: {
-        unsigned int frames = 0;
-
+    case DWC_SSI_TMOD_TO:
         if (fifo32_is_empty(&s->tx_fifo)) {
             s->phase = DWC_SSI_PHASE_IDLE;
             break;
         }
 
         s->phase = DWC_SSI_PHASE_STANDARD_TX_ONLY;
-        while (!fifo32_is_empty(&s->tx_fifo) &&
-               frames < DWC_SSI_PIO_TX_BATCH) {
+        while (!fifo32_is_empty(&s->tx_fifo)) {
             uint32_t tx = fifo32_pop(&s->tx_fifo);
 
             dwc_ssi_send_frame(s, tx);
-            frames++;
         }
-        if (fifo32_is_empty(&s->tx_fifo)) {
-            s->phase = DWC_SSI_PHASE_IDLE;
-        }
+        s->phase = DWC_SSI_PHASE_IDLE;
         break;
-    }
     case DWC_SSI_TMOD_RO:
         switch (s->phase) {
         case DWC_SSI_PHASE_IDLE:
@@ -713,20 +702,12 @@ static uint64_t dwc_ssi_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case A_TXFLR:
         value = fifo32_num_used(&s->tx_fifo);
-        if (s->phase == DWC_SSI_PHASE_STANDARD_TX_ONLY) {
-            dwc_ssi_run_transfer(s);
-            dwc_ssi_update_irq(s);
-        }
         break;
     case A_RXFLR:
         value = fifo32_num_used(&s->rx_fifo);
         break;
     case A_SR:
         value = dwc_ssi_status(s);
-        if (s->phase == DWC_SSI_PHASE_STANDARD_TX_ONLY) {
-            dwc_ssi_run_transfer(s);
-            dwc_ssi_update_irq(s);
-        }
         break;
     case A_ISR:
         value = dwc_ssi_irq_raw_status(s) & s->regs[R_IMR] &

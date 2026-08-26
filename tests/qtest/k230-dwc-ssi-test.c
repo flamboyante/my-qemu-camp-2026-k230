@@ -369,20 +369,31 @@ static void test_tx_only_mode(void)
     }
     k230_ssi_writel(qts, K230_SPI1_BASE, K230_SSI_SER, BIT(0));
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_TXFLR),
-                    ==, K230_SSI_FIFO_DEPTH - 64);
-    for (int i = 0; i < 64; i++) {
-        k230_ssi_write_frame(qts, K230_SPI1_BASE, i);
-    }
-    for (int i = 0; i < 4; i++) {
-        if (k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_TXFLR) == 0) {
-            break;
-        }
-        (void)k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_SR);
-    }
-    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_TXFLR),
                     ==, 0);
     g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_SR) &
                     K230_SSI_SR_BUSY, ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * An interrupt-driven guest waits for TXE without reading TXFLR or SR.
+ * The transfer must already be complete by the time the last frame is
+ * queued, since the FIFO drains synchronously on DR writes.
+ */
+static void test_tx_only_irq_ready(void)
+{
+    QTestState *qts = k230_ssi_start();
+
+    configure_loopback(qts, K230_SSI_TMOD_TO, 0);
+    k230_ssi_enable_cs(qts, K230_SPI1_BASE, BIT(0));
+    for (int i = 0; i < 8; i++) {
+        k230_ssi_write_frame(qts, K230_SPI1_BASE, 0x11 * (i + 1));
+    }
+
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_TXFLR),
+                    ==, 0);
+    g_assert_cmphex(k230_ssi_readl(qts, K230_SPI1_BASE, K230_SSI_ISR) &
+                    K230_SSI_INT_TXE, ==, K230_SSI_INT_TXE);
     qtest_quit(qts);
 }
 
@@ -692,6 +703,8 @@ int main(int argc, char **argv)
                    test_interrupt_controller);
     qtest_add_func("/k230-dwc-ssi/plic-routing", test_plic_routing);
     qtest_add_func("/k230-dwc-ssi/tx-only-mode", test_tx_only_mode);
+    qtest_add_func("/k230-dwc-ssi/tx-only-irq-ready",
+                   test_tx_only_irq_ready);
     qtest_add_func("/k230-dwc-ssi/eeprom-read-contract",
                    test_eeprom_read_contract);
     qtest_add_func("/k230-dwc-ssi/rx-fifo-overflow", test_rx_fifo_overflow);
