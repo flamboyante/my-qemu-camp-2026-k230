@@ -1877,6 +1877,7 @@ F: tests/qtest/k230-ddr-test.c
 F: tests/qtest/k230-wdt-test.c
 F: tests/qtest/k230-gsdma-test.c
 F: tests/qtest/k230-decomp-gzip-test.c
+F: tests/qtest/k230-dwc-ssi-test.c
 
 RX Machines
 -----------
@@ -2406,10 +2407,9 @@ M: Alistair Francis <alistair@alistair23.me>
 S: Maintained
 F: docs/devel/ssi.rst
 F: hw/ssi/*
-F: hw/ssi/dwc_ssi.c
 F: hw/block/m25p80*
-F: include/hw/ssi/dwc_ssi.h
 F: include/hw/ssi/ssi.h
+F: include/hw/ssi/dwc_ssi.h
 X: hw/ssi/xilinx_*
 F: tests/qtest/aspeed_smc-test.c
 

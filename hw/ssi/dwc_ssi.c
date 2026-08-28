@@ -37,9 +37,6 @@ enum {
     DWC_SSI_TMOD_EEPROM_READ,
 };
 
-/* Only the standard frame format is modelled. */
-#define DWC_SSI_FRF_STANDARD            0x0
-
 REG32(CTRLR0, 0x000)
     FIELD(CTRLR0, DFS, 0, 5)
     FIELD(CTRLR0, FRF, 6, 2)
@@ -430,9 +427,8 @@ static uint32_t dwc_ssi_send_frame(DwcSsiState *s,
     tx &= mask;
 
     /*
-     * Frames wider than 8 bits only make sense for peripherals that
-     * define such frames. Byte-oriented devices like m25p80 consume
-     * the low 8 bits and drop the rest.
+     * For frame widths greater than 8 bits, 8-bit device models such as
+     * m25p80 consume only the lower 8 bits; the upper bits are ignored.
      */
     if (mask > 0xff) {
         qemu_log_mask(LOG_UNIMP,
@@ -773,7 +769,7 @@ static void dwc_ssi_write(void *opaque, hwaddr addr,
 
     switch (addr) {
     case A_CTRLR0:
-        if (FIELD_EX32(value, CTRLR0, SPI_FRF) != DWC_SSI_FRF_STANDARD) {
+        if (FIELD_EX32(value, CTRLR0, SPI_FRF) != 0) {
             qemu_log_mask(LOG_UNIMP,
                           "%s: enhanced SPI frame formats are not modelled\n",
                           DEVICE(s)->canonical_path);

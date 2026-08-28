@@ -346,13 +346,6 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->dwc_ssi[2]), 0,
                     memmap[K230_DEV_SPI].base);
 
-    create_unimplemented_device("spi-flash-xip",
-                                memmap[K230_DEV_FLASH].base,
-                                memmap[K230_DEV_FLASH].size);
-
-    create_unimplemented_device("hi_sys", memmap[K230_DEV_HI_SYS_CFG].base,
-                                memmap[K230_DEV_HI_SYS_CFG].size);
-
     /* unimplemented devices */
     create_unimplemented_device("kpu.l2-cache",
                                 memmap[K230_DEV_KPU_L2_CACHE].base,
@@ -489,8 +482,11 @@ static void k230_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("sd1", memmap[K230_DEV_SD1].base,
                                 memmap[K230_DEV_SD1].size);
 
-    create_unimplemented_device("ddrc_cfg", memmap[K230_DEV_DDRC_CFG].base,
-                                memmap[K230_DEV_DDRC_CFG].size);
+    create_unimplemented_device("hi_sys_cfg", memmap[K230_DEV_HI_SYS_CFG].base,
+                                memmap[K230_DEV_HI_SYS_CFG].size);
+
+    create_unimplemented_device("flash", memmap[K230_DEV_FLASH].base,
+                                memmap[K230_DEV_FLASH].size);
 }
 
 static void k230_soc_class_init(ObjectClass *oc, const void *data)
