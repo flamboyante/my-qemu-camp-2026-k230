@@ -257,6 +257,7 @@ static bool dwc_ssi_validate_config(DwcSsiState *s, Error **errp)
 
 static uint32_t dwc_ssi_imr_reset(const DwcSsiState *s)
 {
+    /* K230 currently uses master profiles for IMR reset only */
     return DWC_SSI_IMR_RESET_BASE |
            (s->cfg.master_mode ? R_IMR_MSTIM_MASK : 0);
 }

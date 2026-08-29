@@ -98,12 +98,12 @@ static const K230SsiInstance k230_ssi_instances[3] = {
     }, {
         .base = K230_SPI1_BASE,
         .num_cs = 5,
-        .imr_reset = 0x0000001fU,
+        .imr_reset = 0x0000003fU,
         .first_irq = 155,
     }, {
         .base = K230_SPI2_BASE,
         .num_cs = 5,
-        .imr_reset = 0x0000001fU,
+        .imr_reset = 0x0000003fU,
         .first_irq = 164,
     },
 };

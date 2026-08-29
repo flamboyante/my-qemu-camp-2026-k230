@@ -131,12 +131,12 @@ static const K230DwcSsiProfile k230_dwc_ssi_profiles[] = {
     [0] = { /* QSPI0, SDK spi1 */
         .num_cs = 5,
         .fifo_depth = 256,
-        .master_mode = false,
+        .master_mode = true,
     },
     [1] = { /* QSPI1, SDK spi2 */
         .num_cs = 5,
         .fifo_depth = 256,
-        .master_mode = false,
+        .master_mode = true,
     },
     [2] = { /* SPI-OPI/FMC, SDK spi0 */
         .num_cs = 1,
