@@ -257,7 +257,7 @@ static bool dwc_ssi_validate_config(DwcSsiState *s, Error **errp)
 
 static uint32_t dwc_ssi_imr_reset(const DwcSsiState *s)
 {
-    /* K230 currently uses master profiles for IMR reset only */
+    /* Select the profile-specific IMR reset value, serial-slave is not modelled*/
     return DWC_SSI_IMR_RESET_BASE |
            (s->cfg.master_mode ? R_IMR_MSTIM_MASK : 0);
 }
@@ -769,7 +769,17 @@ static void dwc_ssi_write(void *opaque, hwaddr addr,
     }
 
     switch (addr) {
-    case A_CTRLR0:
+    case A_CTRLR0: {
+        uint32_t dfs = FIELD_EX32(value, CTRLR0, DFS);
+
+        if (dfs < 3) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: unsupported DFS value %u (must encode "
+                          "4..32 bits)\n",
+                          DEVICE(s)->canonical_path, dfs);
+            return;
+        }
+
         if (FIELD_EX32(value, CTRLR0, SPI_FRF) != 0) {
             qemu_log_mask(LOG_UNIMP,
                           "%s: enhanced SPI frame formats are not modelled\n",
@@ -778,6 +788,7 @@ static void dwc_ssi_write(void *opaque, hwaddr addr,
         dwc_ssi_write_masked(s, R_CTRLR0, value,
                              DWC_SSI_CTRLR0_STANDARD_WRITABLE_MASK);
         break;
+    }
     case A_CTRLR1:
         dwc_ssi_write_masked(s, R_CTRLR1, value,
                              DWC_SSI_CTRLR1_WRITABLE_MASK);
