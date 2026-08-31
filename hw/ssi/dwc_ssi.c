@@ -6,7 +6,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * Emulates the DesignWare SSI controller in Standard SPI mode,
- * covering the PIO/FIFO data path, interrupt outputs and cs.
+ * covering the PIO/FIFO data path, interrupt outputs and cs and
+ * serial-slave is not modelled.
  */
 
 #include "qemu/osdep.h"
@@ -257,7 +258,7 @@ static bool dwc_ssi_validate_config(DwcSsiState *s, Error **errp)
 
 static uint32_t dwc_ssi_imr_reset(const DwcSsiState *s)
 {
-    /* Select the profile-specific IMR reset value, serial-slave is not modelled*/
+    /* Select the profile-specific IMR reset value */
     return DWC_SSI_IMR_RESET_BASE |
            (s->cfg.master_mode ? R_IMR_MSTIM_MASK : 0);
 }
