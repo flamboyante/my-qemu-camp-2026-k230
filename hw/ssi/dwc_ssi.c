@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * Emulates the DesignWare SSI controller in Standard SPI mode,
- * covering the PIO/FIFO data path, interrupt outputs and chip selects.
+ * covering the PIO/FIFO data path, interrupt outputs and cs.
  */
 
 #include "qemu/osdep.h"
@@ -20,7 +20,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 
-/* DWC SSI 1.03 derivative (TRM v0.3.1 section 12.3) */
+/* DWC SSI 1.03 derivative */
 #define DWC_SSI_CTRLR0_RESET            0x00004007
 #define DWC_SSI_SR_RESET                0x00000006
 #define DWC_SSI_IDR_RESET               0xa1b2c3d5
@@ -221,8 +221,8 @@ REG32(XIP_WRITE_CTRL, 0x148)
     (R_RX_SAMPLE_DELAY_RSD_MASK | R_RX_SAMPLE_DELAY_SE_MASK)
 
 /*
- * TXU, DONE and AXIE depend on transfer engines outside Standard PIO.
- * Their physical outputs are exposed but remain deasserted in this model.
+ * TXU/DONE/AXIE: not modeled in Standard PIO.
+ * Just wired out and tied low.
  */
 static const uint32_t dwc_ssi_irq_status_mask[DWC_SSI_IRQ_COUNT] = {
     [DWC_SSI_IRQ_TXE] = R_RISR_TXEIR_MASK,
@@ -338,7 +338,7 @@ static void dwc_ssi_select(DwcSsiState *s, unsigned cs)
 {
     if (cs >= s->cfg.num_cs) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: invalid chip select %u\n",
+                      "%s: invalid cs %u\n",
                       DEVICE(s)->canonical_path, cs);
         dwc_ssi_deselect(s);
         return;
@@ -364,7 +364,7 @@ static void dwc_ssi_update_cs(DwcSsiState *s)
 
     if (ser & (ser - 1)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: multiple chip selects enabled: 0x%x\n",
+                      "%s: multiple cs enabled: 0x%x\n",
                       DEVICE(s)->canonical_path, ser);
         dwc_ssi_deselect(s);
         return;
@@ -461,10 +461,8 @@ static void dwc_ssi_run_transfer(DwcSsiState *s)
     }
 
     /*
-     * TRM: the controller starts shifting only after the TX FIFO
-     * occupancy exceeds TXFTLR.TXFTHR.  Transfers already in flight
-     * are not interrupted when the FIFO temporarily drops below the
-     * level.
+     * Shift doesn't start until TX FIFO > TXFTLR.TXFTHR.
+     * In-flight transfers won't be aborted if FIFO drops below.
      */
     if (s->phase == DWC_SSI_PHASE_IDLE &&
         fifo32_num_used(&s->tx_fifo) <=
@@ -522,7 +520,7 @@ static void dwc_ssi_run_transfer(DwcSsiState *s)
             s->phase = DWC_SSI_PHASE_RX_ONLY;
             s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
                                               NDF) + 1;
-            /* Fall through. */
+            /* Fall through */
         case DWC_SSI_PHASE_RX_ONLY:
             while (s->remaining_frames > 0 &&
                    !fifo32_is_full(&s->rx_fifo)) {
@@ -544,7 +542,7 @@ static void dwc_ssi_run_transfer(DwcSsiState *s)
                 break;
             }
             s->phase = DWC_SSI_PHASE_EEPROM_COMMAND;
-            /* Fall through. */
+            /* Fall through */
         case DWC_SSI_PHASE_EEPROM_COMMAND:
             if (fifo32_is_empty(&s->tx_fifo)) {
                 break;
@@ -557,7 +555,7 @@ static void dwc_ssi_run_transfer(DwcSsiState *s)
             s->phase = DWC_SSI_PHASE_EEPROM_DATA;
             s->remaining_frames = FIELD_EX32(s->regs[R_CTRLR1], CTRLR1,
                                               NDF) + 1;
-            /* Fall through. */
+            /* Fall through */
         case DWC_SSI_PHASE_EEPROM_DATA:
             while (s->remaining_frames > 0 &&
                    !fifo32_is_full(&s->rx_fifo)) {
@@ -821,9 +819,8 @@ static void dwc_ssi_write(void *opaque, hwaddr addr,
         uint32_t new_ser = value & MAKE_64BIT_MASK(0, s->cfg.num_cs);
 
         /*
-         * Changing the selected slave terminates a pending transaction:
-         * the FIFOs are flushed only by clearing SSIENR (TRM), but a
-         * stale RO/EEPROM phase must not resume on the new chip select.
+         * Switching CS aborts pending xfer.
+         * Stale RO/EEPROM phase must not resume on the new slave.
          */
         if (old_ser != new_ser && s->phase != DWC_SSI_PHASE_IDLE) {
             s->phase = DWC_SSI_PHASE_IDLE;
